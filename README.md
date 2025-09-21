@@ -64,6 +64,7 @@ To finetune Vicuna-1.5-7b with VIRAL, run:
 bash scripts/v1_5/finetune_lora.sh
 ```
 Make sure --config_path ./config.json is included in the bash file.
+Also, keep effective batch size as 128 for reproduction. 
 
 ### Configuration
 Example configuration of `config.json`
