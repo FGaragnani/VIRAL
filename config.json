@@ -48,5 +48,5 @@
   "vra_target": "openai/clip-vit-large-patch14-336",
   "vra_weight": 0.5,
   "projector_dim": 2048,
-  "z_dim": 768
+  "z_dim": 1024
 }
