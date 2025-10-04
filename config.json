@@ -45,7 +45,7 @@
   "vra_loss": true,
   "target_layers": [16],
   "use_multiple_projectors": false,
-  "vra_target": "dinov2-vit-b",
+  "vra_target": "openai/clip-vit-large-patch14-336",
   "vra_weight": 0.5,
   "projector_dim": 2048,
   "z_dim": 768
