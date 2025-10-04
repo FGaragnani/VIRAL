@@ -28,7 +28,7 @@ export TOKENIZERS_PARALLELISM=false
 export WANDB_MODE=offline
 export WANDB_PROJECT=jeppetto
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-# export HF_HUB_CACHE="/leonardo_scratch/large/userexternal/fcocchi0/rag_mlmm/hf_models"
+export HF_HUB_CACHE="/leonardo_scratch/large/userexternal/fcocchi0/rag_mlmm/hf_models"
 export HF_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
