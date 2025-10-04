@@ -45,7 +45,7 @@ mm_projector_lr=2e-5
 run_name="${SLURM_JOB_NAME}"
 output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/${run_name}"
 
-per_device_train_batch_size=32
+per_device_train_batch_size=16
 gradient_accumulation_steps=2
 
 language_model="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys/vicuna-7b-v1.5"
