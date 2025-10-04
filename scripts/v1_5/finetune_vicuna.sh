@@ -95,7 +95,6 @@ llava/train/train_mem.py \
 --evaluation_strategy "no" \
 --save_strategy steps \
 --save_steps 1000 \
-# --save_total_limit 10 \
 --learning_rate $learning_rate \
 --weight_decay 0. \
 --warmup_ratio 0.03 \
