@@ -181,7 +181,7 @@ def simple_evaluate(
                 "device": device,
             },
         )
-    elif isinstance(model, lmms_eval.api.model.lmms):
+    else:
         lm = model
 
     # helper function to recursively apply config overrides to leaf subtasks, skipping their constituent groups.
