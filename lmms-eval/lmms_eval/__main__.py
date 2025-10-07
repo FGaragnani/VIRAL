@@ -474,7 +474,7 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, base_model, get_model_name_from_path(model_path))
 
     results = evaluator.simple_evaluate(
-        model=args.model,
+        model=model,
         model_args=args.model_args,
         tasks=task_names,
         num_fewshot=args.num_fewshot,
