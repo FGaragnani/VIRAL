@@ -47,8 +47,7 @@ python -u lmms-eval/lmms_eval/__main__.py \
 --verbosity=DEBUG \
 --task ${task_list[$SLURM_ARRAY_TASK_ID]} \
 --model mllm \
---name_or_path ${checkpoint_path} \
---model_args "dtype=float16,attn_implementation=sdpa,image_aspect_ratio=pad" \
+--model_args "name_or_path=${checkpoint_path},dtype=float16,attn_implementation=sdpa,image_aspect_ratio=pad" \
 --device cuda:0 \
 --batch_size 1 \
 --output /leonardo_scratch/large/userexternal/fgaragna/logs/lmms_eval \
