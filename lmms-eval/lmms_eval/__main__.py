@@ -31,7 +31,8 @@ from lmms_eval.utils import (
     make_table,
     simple_parse_args_string,
 )
-
+from llava.model.builder import load_pretrained_model
+from llava.mm_utils import get_model_name_from_path
 
 def _int_or_none_list_arg_type(min_len: int, max_len: int, defaults: str, value: str, split_char: str = ","):
     def parse_value(item):
@@ -467,6 +468,8 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
     eval_logger.info(f"Selected Tasks: {task_names}")
     request_caching_args = request_caching_arg_to_dict(cache_requests=args.cache_requests)
     datetime_str = utils.get_datetime_str(timezone=args.timezone)
+    model_path = args.model_args.name_or_path
+    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, None, get_model_name_from_path(model_path))
 
     results = evaluator.simple_evaluate(
         model=args.model,
