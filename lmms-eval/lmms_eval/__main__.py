@@ -470,7 +470,7 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
     datetime_str = utils.get_datetime_str(timezone=args.timezone)
 
     results = evaluator.simple_evaluate(
-        model=model,
+        model=args.model,
         model_args=args.model_args,
         tasks=task_names,
         num_fewshot=args.num_fewshot,
