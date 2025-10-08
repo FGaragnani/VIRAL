@@ -468,10 +468,6 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
     eval_logger.info(f"Selected Tasks: {task_names}")
     request_caching_args = request_caching_arg_to_dict(cache_requests=args.cache_requests)
     datetime_str = utils.get_datetime_str(timezone=args.timezone)
-    model_args_dict = simple_parse_args_string(args.model_args)
-    model_path = model_args_dict.get("name_or_path") 
-    base_model = model_args_dict.get("base")
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, base_model, get_model_name_from_path(model_path))
 
     results = evaluator.simple_evaluate(
         model=model,

@@ -201,7 +201,7 @@ def simple_evaluate(
                     group, task_obj = task_obj
                     if task_obj is None:
                         continue
-                lm.task_dict[task_name] = task_obj.dataset
+                # lm.task_dict[task_name] = task_obj.dataset
                 if "generate_until" in task_obj.get_config("output_type"):
                     if gen_kwargs is not None:
                         task_obj.set_config(key="generation_kwargs", value=gen_kwargs, update=True)
@@ -261,7 +261,7 @@ def simple_evaluate(
         cli_args=cli_args,
     )
 
-    if lm.rank == 0:
+    if hasattr(lm, "rank") and lm.rank == 0:
         if isinstance(model, str):
             model_name = model
         elif hasattr(model, "config") and hasattr(model.config, "_name_or_path"):
