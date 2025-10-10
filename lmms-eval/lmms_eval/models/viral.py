@@ -51,6 +51,9 @@ class VIRAL(lmms):
         batch_size: int = 1,
         model_name: Optional[str] = None,
         device_map: str = "auto",
+        dtype: Optional[Union[str, torch.dtype]] = "auto",
+        attn_implementation: Optional[str] = None,
+        image_aspect_ratio: Optional[float] = None,
         use_cache: bool = True,
         tie_weights: bool = True,
         **kwargs,
@@ -72,11 +75,29 @@ class VIRAL(lmms):
             self.device_map = f"cuda:{accelerator.local_process_index}"
 
         model_name = model_name if model_name is not None else get_model_name_from_path(name_or_path)
+
+        # prepare kwargs for loader
+        loader_kwargs = {}
+        if isinstance(dtype, str):
+            if dtype != "auto":
+                loader_kwargs["torch_dtype"] = getattr(torch, dtype)
+        elif dtype is not None:
+            loader_kwargs["torch_dtype"] = dtype
+
+        if attn_implementation is not None:
+            loader_kwargs["attn_implementation"] = attn_implementation
+
         self._tokenizer, self._model, self._image_processor, self._max_length = load_pretrained_model(
-                name_or_path, base, model_name, device_map=self.device_map
-            )
+            name_or_path, base, model_name, device_map=self.device_map, **loader_kwargs
+        )
 
         self._config = getattr(self._model, "config", None)
+        # optional user-specified image aspect ratio
+        if image_aspect_ratio is not None and self._config is not None:
+            try:
+                self._config.image_aspect_ratio = image_aspect_ratio
+            except Exception:
+                pass
         self.model.eval()
         if tie_weights:
             try:
