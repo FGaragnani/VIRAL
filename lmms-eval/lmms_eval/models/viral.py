@@ -344,7 +344,18 @@ class VIRAL(lmms):
             task = task[0]
             split = split[0]
             # resolve docs defensively for the batch
-            batched_visuals = [doc_to_visual[0](self._get_doc(task, split, ids)) for ids in doc_id]
+            batched_visuals = []
+            for ids in doc_id:
+                doc = self._get_doc(task, split, ids)
+                if doc is None:
+                    eval_logger.warning(f"VIRAL.generate_until: No doc found for task={task}, split={split}, doc_id={ids}. Skipping this item.")
+                    batched_visuals.append(None)
+                else:
+                    try:
+                        batched_visuals.append(doc_to_visual[0](doc))
+                    except Exception as e:
+                        eval_logger.warning(f"VIRAL.generate_until: doc_to_visual failed for task={task}, split={split}, doc_id={ids}: {e}")
+                        batched_visuals.append(None)
             flattened_visuals = self.flatten(batched_visuals)
             gen_kwargs = all_gen_kwargs[0]
 
