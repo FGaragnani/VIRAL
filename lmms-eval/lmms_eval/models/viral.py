@@ -196,16 +196,79 @@ class VIRAL(lmms):
                     new_list.append(j)
         return new_list
 
+    def _get_doc(self, task: str, split: str, doc_id: int):
+        """Defensive lookup for a document in self.task_dict.
+
+        Tries direct lookup first, then attempts fuzzy matching on keys
+        (prefix/substring) to help when task naming differs between
+        Task.config.task and the keys stored by the evaluator.
+        Returns the doc or None if not found.
+        """
+        if not hasattr(self, "task_dict") or not self.task_dict:
+            eval_logger.debug("VIRAL._get_doc: no lm.task_dict available on model")
+            return None
+
+        # direct lookup
+        try:
+            task_map = self.task_dict.get(task)
+            if task_map and split in task_map:
+                docs = task_map[split]
+                return docs[doc_id]
+        except Exception:
+            # fallthrough to fuzzy matching
+            pass
+
+        # fuzzy match: look for keys that match or contain the requested task
+        for key, task_map in self.task_dict.items():
+            try:
+                if not isinstance(key, str):
+                    continue
+                if key == task or key.startswith(task) or (task in key):
+                    if split in task_map:
+                        docs = task_map[split]
+                        return docs[doc_id]
+            except Exception:
+                continue
+
+        eval_logger.warning(f"VIRAL._get_doc: couldn't find doc for task={task}, split={split}, doc_id={doc_id}. Available task_dict keys: {list(self.task_dict.keys())}")
+        return None
+
+    def _ensure_tensor(self, x):
+        """Ensure x is a torch tensor on the model device.
+
+        tokenizer_image_token sometimes returns a tensor or a list; this helper
+        normalizes common cases so callers can safely call .unsqueeze/.to.
+        """
+        if isinstance(x, list):
+            # If it's a list of tensors, try to stack if shapes agree, otherwise return list
+            if len(x) == 0:
+                return None
+            if all(hasattr(el, "unsqueeze") for el in x):
+                try:
+                    return torch.stack(x, dim=0).to(self.device)
+                except Exception:
+                    return x
+            else:
+                return x
+        else:
+            # assume tensor-like
+            try:
+                return x.to(self.device)
+            except Exception:
+                return x
+
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
         # Basic implementation similar to Llava/LlavaHf
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
         for contexts, doc_to_target, doc_to_visual, doc_id, task, split in [reg.args for reg in requests]:
+            # resolve document defensively
+            doc = self._get_doc(task, split, doc_id)
             if type(doc_to_target) == str:
                 continuation = doc_to_target
             else:
-                continuation = doc_to_target(self.task_dict[task][split][doc_id])
-            visuals = [doc_to_visual(self.task_dict[task][split][doc_id])]
+                continuation = doc_to_target(doc) if doc is not None else ""
+            visuals = [doc_to_visual(doc) if doc is not None else None]
             visuals = self.flatten(visuals)
 
             prompts_input = contexts[0] if isinstance(contexts, list) else contexts
@@ -223,18 +286,31 @@ class VIRAL(lmms):
             prompt = conv.get_prompt()
 
             pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
-            contxt_id = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(self.device)
+            contxt_id_raw = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
+            contxt_id = self._ensure_tensor(contxt_id_raw)
+            if hasattr(contxt_id, "unsqueeze"):
+                contxt_id = contxt_id.unsqueeze(0)
             conv.messages[1][1] = continuation
             prompt = conv.get_prompt()
-            input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(self.device)
+            input_ids_raw = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
+            input_ids = self._ensure_tensor(input_ids_raw)
+            if hasattr(input_ids, "unsqueeze"):
+                input_ids = input_ids.unsqueeze(0)
             labels = input_ids.clone()
             labels[0, : contxt_id.shape[1]] = -100
             if visuals:
                 image = process_images(visuals, self._image_processor, self._config)
-                if type(image) is list:
-                    image = [_image.to(dtype=torch.float16, device=self.device) for _image in image]
+                if isinstance(image, list):
+                    try:
+                        image = [
+                            _image.to(dtype=torch.float16, device=self.device) if hasattr(_image, "to") else _image
+                            for _image in image
+                        ]
+                    except Exception:
+                        pass
                 else:
-                    image = image.to(dtype=torch.float16, device=self.device)
+                    if hasattr(image, "to"):
+                        image = image.to(dtype=torch.float16, device=self.device)
             else:
                 image = None
 
@@ -267,7 +343,8 @@ class VIRAL(lmms):
             contexts, all_gen_kwargs, doc_to_visual, doc_id, task, split = zip(*chunk)
             task = task[0]
             split = split[0]
-            batched_visuals = [doc_to_visual[0](self.task_dict[task][split][ids]) for ids in doc_id]
+            # resolve docs defensively for the batch
+            batched_visuals = [doc_to_visual[0](self._get_doc(task, split, ids)) for ids in doc_id]
             flattened_visuals = self.flatten(batched_visuals)
             gen_kwargs = all_gen_kwargs[0]
 
@@ -279,10 +356,17 @@ class VIRAL(lmms):
 
             if flattened_visuals:
                 image_tensor = process_images(flattened_visuals, self._image_processor, self._config)
-                if type(image_tensor) is list:
-                    image_tensor = [_image.to(dtype=torch.float16, device=self.device) for _image in image_tensor]
+                if isinstance(image_tensor, list):
+                    try:
+                        image_tensor = [
+                            _image.to(dtype=torch.float16, device=self.device) if hasattr(_image, "to") else _image
+                            for _image in image_tensor
+                        ]
+                    except Exception:
+                        pass
                 else:
-                    image_tensor = image_tensor.to(dtype=torch.float16, device=self.device)
+                    if hasattr(image_tensor, "to"):
+                        image_tensor = image_tensor.to(dtype=torch.float16, device=self.device)
             else:
                 image_tensor = None
 
