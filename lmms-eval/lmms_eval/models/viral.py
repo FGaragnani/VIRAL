@@ -362,6 +362,26 @@ class VIRAL(lmms):
             pass
         return False
 
+    def _vision_device_dtype(self):
+        """Retrieve the device and dtype used by the model's vision tower.
+
+        Returns a tuple (device, dtype). Falls back to (self.device, model dtype or torch.float16).
+        """
+        try:
+            vt = self.model.get_vision_tower() if hasattr(self.model, 'get_vision_tower') else None
+            if vt is not None:
+                try:
+                    p = next(vt.parameters())
+                    return p.device, p.dtype
+                except Exception:
+                    # try attribute-based
+                    dev = getattr(vt, 'device', self.device)
+                    dt = getattr(vt, 'dtype', getattr(self.model, 'dtype', torch.float16))
+                    return dev, dt
+        except Exception:
+            pass
+        return self.device, getattr(self.model, 'dtype', torch.float16)
+
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
         # Basic implementation for Simple model inputs
         res: List[Tuple[float, bool]] = []
@@ -445,16 +465,17 @@ class VIRAL(lmms):
                 if self._ensure_image_processor():
                     try:
                         processed = process_images(visuals if isinstance(visuals, list) else [visuals], self._image_processor, self._config)
+                        vis_device, vis_dtype = self._vision_device_dtype()
                         if isinstance(processed, list):
                             images_arg = []
                             for _img in processed:
                                 if _img is None:
                                     continue
-                                images_arg.append(_img.to(dtype=torch.float16, device=self.device))
+                                images_arg.append(_img.to(dtype=vis_dtype, device=vis_device))
                             if len(images_arg) == 0:
                                 images_arg = None
                         else:
-                            images_arg = processed.to(dtype=torch.float16, device=self.device)
+                            images_arg = processed.to(dtype=vis_dtype, device=vis_device)
                     except Exception:
                         images_arg = None
 
@@ -536,9 +557,12 @@ class VIRAL(lmms):
                 needs_fallback = True
             elif isinstance(ids_raw, list) and len(ids_raw) == 0:
                 needs_fallback = True
-            elif isinstance(ids_raw, torch.Tensor):
-                if ids_raw.numel() == 0:
-                    needs_fallback = True
+            elif hasattr(ids_raw, "numel"):
+                try:
+                    if ids_raw.numel() == 0:  # type: ignore[attr-defined]
+                        needs_fallback = True
+                except Exception:
+                    pass
             if needs_fallback:
                 try:
                     ids_raw = self.tokenizer(prompt, return_tensors="pt").input_ids
@@ -581,16 +605,17 @@ class VIRAL(lmms):
                         image_sizes = [v.size for v in visuals_list if hasattr(v, 'size')]
                         processed = process_images(visuals_list, self._image_processor, self._config)
                         # Normalize to list of tensors on the correct device/dtype
+                        vis_device, vis_dtype = self._vision_device_dtype()
                         if isinstance(processed, list):
                             images_arg = []
                             for _img in processed:
                                 if _img is None:
                                     continue
-                                images_arg.append(_img.to(dtype=torch.float16, device=self.device))
+                                images_arg.append(_img.to(dtype=vis_dtype, device=vis_device))
                             if len(images_arg) == 0:
                                 images_arg = None
                         else:
-                            images_arg = processed.to(dtype=torch.float16, device=self.device)
+                            images_arg = processed.to(dtype=vis_dtype, device=vis_device)
                     except Exception as e:
                         eval_logger.warning(f"VIRAL.generate_until: image processing failed; continuing without images. Error: {e}")
                         images_arg = None

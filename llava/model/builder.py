@@ -247,8 +247,22 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         if vision_tower is not None:
             if not getattr(vision_tower, 'is_loaded', False):
                 vision_tower.load_model(device_map=device_map)
-            if device_map != 'auto':
-                vision_tower.to(device=device_map, dtype=torch.float16)
+            # Always align dtype with the language model/projector to prevent matmul dtype mismatches
+            try:
+                vt_dtype = getattr(model, 'dtype', torch.float16)
+                # Preserve existing device placement but update dtype
+                vision_tower.to(dtype=vt_dtype)
+            except Exception:
+                # Fallback for older towers requiring device argument when changing dtype
+                try:
+                    current_device = None
+                    try:
+                        current_device = next(vision_tower.parameters()).device
+                    except Exception:
+                        pass
+                    vision_tower.to(device=current_device, dtype=getattr(model, 'dtype', torch.float16))
+                except Exception:
+                    pass
             image_processor = getattr(vision_tower, 'image_processor', None)
         else:
             image_processor = None
