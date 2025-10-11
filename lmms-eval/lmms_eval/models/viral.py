@@ -87,11 +87,28 @@ class VIRAL(lmms):
         if attn_implementation is not None:
             loader_kwargs["attn_implementation"] = attn_implementation
 
+
         self._tokenizer, self._model, self._image_processor, self._max_length = load_pretrained_model(
             name_or_path, base, model_name, device_map=self.device_map, **loader_kwargs
         )
 
         self._config = getattr(self._model, "config", None)
+        # Ensure image processor is always set
+        if self._image_processor is None:
+            try:
+                from transformers import AutoImageProcessor
+                # Try to get vision config path from model config
+                vision_path = None
+                if self._config is not None and hasattr(self._config, "vision_config"):
+                    vision_path = getattr(self._config.vision_config, "name_or_path", None)
+                if vision_path is None:
+                    # fallback to model_name or name_or_path
+                    vision_path = model_name or name_or_path
+                self._image_processor = AutoImageProcessor.from_pretrained(vision_path)
+            except Exception as e:
+                eval_logger.warning(f"VIRAL: Could not automatically load image processor: {e}")
+                self._image_processor = None
+
         # optional user-specified image aspect ratio
         if image_aspect_ratio is not None and self._config is not None:
             try:
