@@ -461,16 +461,16 @@ def evaluate(
                 split_name = task_obj.config.validation_split
                 docs = list(task_obj.validation_docs())
 
-                # allow possibility of multiple splits in the future by wrapping in dict
-                lm.task_dict[task_name] = {split_name: docs}
-                # also register by the task.config.task string if available (some wrappers
-                # index using the Task.config.task value instead of the task_name)
-                try:
-                    cfg_task = getattr(task_obj.config, "task", None)
-                    if cfg_task and cfg_task != task_name:
-                        lm.task_dict[cfg_task] = {split_name: docs}
-                except Exception:
-                    pass
+            # allow possibility of multiple splits in the future by wrapping in dict
+            lm.task_dict[task_name] = {split_name: docs}
+            # also register by the task.config.task string if available (some wrappers
+            # index using the Task.config.task value instead of the task_name)
+            try:
+                cfg_task = getattr(task_obj.config, "task", None)
+                if cfg_task and cfg_task != task_name:
+                    lm.task_dict[cfg_task] = {split_name: docs}
+            except Exception:
+                pass
     except Exception:
         # don't fail evaluation here; models will raise clear errors if they need the map
         pass

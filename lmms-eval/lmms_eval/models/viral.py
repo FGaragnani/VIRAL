@@ -204,9 +204,20 @@ class VIRAL(lmms):
         Task.config.task and the keys stored by the evaluator.
         Returns the doc or None if not found.
         """
+        # If task_dict is missing or empty, try to lazily populate it from
+        # the tasks module. This is a best-effort fallback for cases where the
+        # evaluator did not set lm.task_dict (e.g., custom calling flows).
         if not hasattr(self, "task_dict") or not self.task_dict:
-            eval_logger.debug("VIRAL._get_doc: no lm.task_dict available on model")
-            return None
+            try:
+                from lmms_eval.tasks import get_task_dict
+
+                # attempt to fetch only the requested task mapping
+                task_map = get_task_dict([task], None)
+                if task_map:
+                    self.task_dict = task_map
+            except Exception:
+                eval_logger.debug("VIRAL._get_doc: no lm.task_dict available on model")
+                return None
 
         # direct lookup
         try:
@@ -410,19 +421,39 @@ class VIRAL(lmms):
             attention_masks = input_ids.ne(pad_token_ids).to(self.device)
 
             try:
-                cont = self.model.generate(
-                    input_ids,
-                    attention_mask=attention_masks,
-                    pad_token_id=pad_token_ids,
-                    images=image_tensor,
-                    image_sizes=gen_kwargs.get("image_sizes", None),
+                # Defensive: some model.generate implementations (e.g., HF Transformers
+                # or custom wrappers) do not accept an `image_sizes` kwarg and will
+                # raise a helpful error listing unused model_kwargs. Inspect the
+                # generate signature and only pass `image_sizes` if supported.
+                gen_fn = getattr(self.model, "generate")
+                try:
+                    from inspect import signature
+
+                    sig = signature(gen_fn)
+                    accepts_image_sizes = "image_sizes" in sig.parameters
+                except Exception:
+                    accepts_image_sizes = False
+
+                generate_kwargs: dict = dict(
                     do_sample=True if gen_kwargs["temperature"] > 0 else False,
                     temperature=gen_kwargs["temperature"],
                     top_p=gen_kwargs["top_p"],
                     num_beams=gen_kwargs["num_beams"],
                     max_new_tokens=gen_kwargs["max_new_tokens"],
                     use_cache=self.use_cache,
+                    pad_token_id=pad_token_ids,
+                    attention_mask=attention_masks,
                 )
+
+                # only include image-specific kwargs when applicable
+                if image_tensor is not None:
+                    # older LLaVA-style models expect `images` kwarg
+                    generate_kwargs["images"] = image_tensor
+
+                if accepts_image_sizes and gen_kwargs.get("image_sizes", None) is not None:
+                    generate_kwargs["image_sizes"] = gen_kwargs.get("image_sizes", None)
+
+                cont = self.model.generate(input_ids, **generate_kwargs)
                 text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
             except Exception as e:
                 eval_logger.error(f"Error {e} in generating")
