@@ -570,12 +570,16 @@ class VIRAL(lmms):
 
             # Prepare image tensor if any
             images_arg = None
+            image_sizes = None
             if visuals is not None:
                 if not self._ensure_image_processor():
                     eval_logger.warning("VIRAL.generate_until: no image_processor available; generating without images.")
                 else:
                     try:
-                        processed = process_images(visuals if isinstance(visuals, list) else [visuals], self._image_processor, self._config)
+                        # Build a consistent visuals list for sizes
+                        visuals_list = visuals if isinstance(visuals, list) else [visuals]
+                        image_sizes = [v.size for v in visuals_list if hasattr(v, 'size')]
+                        processed = process_images(visuals_list, self._image_processor, self._config)
                         # Normalize to list of tensors on the correct device/dtype
                         if isinstance(processed, list):
                             images_arg = []
@@ -590,6 +594,7 @@ class VIRAL(lmms):
                     except Exception as e:
                         eval_logger.warning(f"VIRAL.generate_until: image processing failed; continuing without images. Error: {e}")
                         images_arg = None
+                        image_sizes = None
 
             # Generation parameters
             gen_kwargs = dict(all_gen_kwargs) if isinstance(all_gen_kwargs, dict) else {}
@@ -612,18 +617,21 @@ class VIRAL(lmms):
 
             # Compose stopping criteria from strings
             input_len = int(input_ids.shape[1]) if hasattr(input_ids, 'shape') else int(len(input_ids[0]))
-            try:
-                stopping_criteria = stop_sequences_criteria(
-                    self.tokenizer,
-                    until,
-                    initial_decoder_input_length=input_len,
-                    batch_size=1,
-                ) if until else None
-            except Exception:
-                stopping_criteria = None
+            # For maximum robustness across HF versions, skip custom stopping_criteria
+            stopping_criteria = None
 
             # Run generation
             try:
+                # Debug context for diagnosing shape/type issues
+                try:
+                    eval_logger.debug(
+                        f"VIRAL.generate_until: input_ids shape={tuple(input_ids.shape) if hasattr(input_ids,'shape') else 'N/A'}, "
+                        f"images_arg={'None' if images_arg is None else ('list['+str(len(images_arg))+']' if isinstance(images_arg,list) else tuple(images_arg.shape))}, "
+                        f"image_sizes={'None' if image_sizes is None else len(image_sizes)}, "
+                        f"merge={getattr(self._config,'mm_patch_merge_type', 'flat')}, ar={getattr(self._config,'image_aspect_ratio', None)}"
+                    )
+                except Exception:
+                    pass
                 with torch.inference_mode():
                     generate_common = dict(
                         do_sample=True if temperature and temperature > 0 else False,
@@ -635,15 +643,26 @@ class VIRAL(lmms):
                         pad_token_id=pad_token_id,
                         attention_mask=attention_mask,
                     )
-                    if stopping_criteria is not None:
-                        generate_common["stopping_criteria"] = stopping_criteria
+                    # Do not pass custom stopping_criteria; we'll trim decoded text instead
 
                     if getattr(self, "_accepts_image_generate", False) and images_arg is not None:
-                        output_ids = self.model.generate(
-                            input_ids=input_ids,
-                            images=images_arg,
-                            **generate_common,
-                        )
+                        # Only pass image_sizes when required by config
+                        mm_merge = getattr(self._config, 'mm_patch_merge_type', 'flat')
+                        aspect = getattr(self._config, 'image_aspect_ratio', None)
+                        pass_sizes = (aspect == 'anyres') or (isinstance(mm_merge, str) and mm_merge.startswith('spatial'))
+                        if pass_sizes and image_sizes is not None:
+                            output_ids = self.model.generate(
+                                input_ids=input_ids,
+                                images=images_arg,
+                                image_sizes=image_sizes,
+                                **generate_common,
+                            )
+                        else:
+                            output_ids = self.model.generate(
+                                input_ids=input_ids,
+                                images=images_arg,
+                                **generate_common,
+                            )
                     else:
                         if images_arg is not None and not getattr(self, "_accepts_image_generate", False):
                             eval_logger.warning("VIRAL.generate_until: Model.generate() does not accept 'images'; generating without images.")
@@ -652,8 +671,13 @@ class VIRAL(lmms):
                             **generate_common,
                         )
 
+                # HF may return a GenerateOutput struct; extract sequences if present
+                if hasattr(output_ids, "sequences"):
+                    output_tensor = output_ids.sequences
+                else:
+                    output_tensor = output_ids
                 # Slice to only new tokens and decode
-                new_tokens = output_ids[0, input_len:]
+                new_tokens = output_tensor[0, input_len:]
                 text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
 
                 # Final defensive truncation by stopping strings
