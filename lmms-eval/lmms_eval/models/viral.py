@@ -1,5 +1,7 @@
 import copy
 import os
+import json
+import inspect
 import warnings
 from datetime import timedelta
 from typing import List, Optional, Tuple, Union
@@ -74,7 +76,25 @@ class VIRAL(lmms):
             self._device = torch.device(f"cuda:{accelerator.local_process_index}")
             self.device_map = f"cuda:{accelerator.local_process_index}"
 
-        model_name = model_name if model_name is not None else get_model_name_from_path(name_or_path)
+        # Determine model_name; if it's not clearly a LLaVA model but the checkpoint looks multimodal,
+        # force a name that contains "llava" so the builder loads the correct subclass (matches training code).
+        inferred_name = model_name if model_name is not None else get_model_name_from_path(name_or_path)
+        try:
+            ckpt_dir = os.path.abspath(name_or_path)
+            cfg_path = os.path.join(ckpt_dir, "config.json")
+            cfg_llava = False
+            if os.path.isfile(cfg_path):
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg_json = json.load(f)
+                mt = str(cfg_json.get("model_type", ""))
+                cfg_llava = ("llava" in mt.lower()) or bool(cfg_json.get("mm_vision_tower")) or bool(cfg_json.get("vision_tower"))
+            mm_proj_exists = os.path.isfile(os.path.join(ckpt_dir, "mm_projector.bin"))
+            if ("llava" not in inferred_name.lower()) and (cfg_llava or mm_proj_exists):
+                eval_logger.debug(f"VIRAL: Overriding model_name to include 'llava' based on checkpoint contents: {inferred_name} -> llava-{inferred_name}")
+                inferred_name = f"llava-{inferred_name}"
+        except Exception as _e:
+            eval_logger.debug(f"VIRAL: Could not infer LLaVA nature from checkpoint: {_e}")
+        model_name = inferred_name
 
         # prepare kwargs for loader
         loader_kwargs = {}
@@ -140,6 +160,15 @@ class VIRAL(lmms):
                 self._config.image_aspect_ratio = image_aspect_ratio
             except Exception:
                 pass
+        # Introspect whether this model's generate() accepts images (as in Llava* classes)
+        try:
+            sig = inspect.signature(self.model.generate)
+            self._accepts_image_generate = ("images" in sig.parameters)
+        except Exception:
+            self._accepts_image_generate = False
+        eval_logger.debug(
+            f"VIRAL: Model class={self.model.__class__.__name__}, accepts images in generate: {self._accepts_image_generate}"
+        )
         self.model.eval()
         if tie_weights:
             try:
@@ -334,206 +363,291 @@ class VIRAL(lmms):
         return False
 
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
-        # Basic implementation similar to Llava/LlavaHf
-        res = []
+        # Basic implementation for Simple model inputs
+        res: List[Tuple[float, bool]] = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
-        for contexts, doc_to_target, doc_to_visual, doc_id, task, split in [reg.args for reg in requests]:
-            # resolve document defensively
-            doc = self._get_doc(task, split, doc_id)
-            if type(doc_to_target) == str:
-                continuation = doc_to_target
+        for reg in requests:
+            # Unpack with resilience
+            tup = reg.args if isinstance(reg.args, (list, tuple)) else (reg.args,)
+            if len(tup) == 6:
+                contexts, doc_to_target, doc_to_visual, doc_id, task, split = tup  # type: ignore[misc]
             else:
-                continuation = doc_to_target(doc) if doc is not None else ""
-            visuals = [doc_to_visual(doc) if doc is not None else None]
-            visuals = self.flatten(visuals)
+                contexts = tup[0] if len(tup) > 0 else ""
+                doc_to_target = tup[1] if len(tup) > 1 else (lambda _doc: "")
+                doc_to_visual = tup[2] if len(tup) > 2 else (lambda _doc: None)
+                doc_id = tup[3] if len(tup) > 3 else -1
+                task = tup[4] if len(tup) > 4 else ""
+                split = tup[5] if len(tup) > 5 else ""
 
-            prompts_input = contexts[0] if isinstance(contexts, list) else contexts
-            if visuals and DEFAULT_IMAGE_TOKEN not in prompts_input:
-                image_tokens = [DEFAULT_IMAGE_TOKEN] * len(visuals)
-                image_tokens = " ".join(image_tokens)
-                prompts_input = image_tokens + "\n" + prompts_input
+            # Resolve doc, continuation, visuals
+            doc = self._get_doc(task, split, doc_id)
+            continuation = doc_to_target if isinstance(doc_to_target, str) else (doc_to_target(doc) if doc is not None else "")
+            try:
+                visuals = doc_to_visual(doc) if doc is not None else None
+            except Exception:
+                visuals = None
+
+            # Build prompt with optional image tokens
+            prompt_text = contexts[0] if isinstance(contexts, list) else contexts
+            if visuals is not None and DEFAULT_IMAGE_TOKEN not in prompt_text:
+                num_imgs = len(visuals) if isinstance(visuals, list) else 1
+                image_tokens = " ".join([DEFAULT_IMAGE_TOKEN] * num_imgs)
+                prompt_text = f"{image_tokens}\n{prompt_text}"
 
             if "llama_3" in getattr(self, "conv_template", ""):
                 conv = copy.deepcopy(conv_templates[self.conv_template])
             else:
                 conv = conv_templates[getattr(self, "conv_template", "vicuna_v1")].copy()
-            conv.append_message(conv.roles[0], prompts_input)
+            conv.append_message(conv.roles[0], prompt_text)
             conv.append_message(conv.roles[1], None)
-            prompt = conv.get_prompt()
+            ctx_prompt = conv.get_prompt()
 
-            pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
-            contxt_id_raw = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
-            contxt_id = self._ensure_tensor(contxt_id_raw)
-            if hasattr(contxt_id, "unsqueeze"):
-                contxt_id = contxt_id.unsqueeze(0)
-            conv.messages[1][1] = continuation
-            prompt = conv.get_prompt()
-            input_ids_raw = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
-            input_ids = self._ensure_tensor(input_ids_raw)
-            if hasattr(input_ids, "unsqueeze"):
-                input_ids = input_ids.unsqueeze(0)
-            labels = input_ids.clone()
-            labels[0, : contxt_id.shape[1]] = -100
-            if visuals:
-                if not self._ensure_image_processor():
-                    eval_logger.warning(f"VIRAL.loglikelihood: no image_processor available; skipping image processing for task={task}, doc_id={doc_id}")
-                    image = None
-                else:
-                    image = process_images(visuals, self._image_processor, self._config)
-                if isinstance(image, list):
-                    try:
-                        image = [
-                            _image.to(dtype=torch.float16, device=self.device) if hasattr(_image, "to") else _image
-                            for _image in image
-                        ]
-                    except Exception:
-                        pass
-                else:
-                    if hasattr(image, "to"):
-                        image = image.to(dtype=torch.float16, device=self.device)
+            # Tokenize context only
+            ctx_ids_raw = tokenizer_image_token(ctx_prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
+            if isinstance(ctx_ids_raw, list):
+                try:
+                    parts = [t if isinstance(t, torch.Tensor) else torch.tensor(t) for t in ctx_ids_raw]
+                    ctx_ids = torch.cat(parts, dim=0)
+                except Exception:
+                    first = ctx_ids_raw[0]
+                    ctx_ids = first if isinstance(first, torch.Tensor) else torch.tensor(first)
             else:
-                image = None
+                ctx_ids = ctx_ids_raw
+            if ctx_ids.dim() == 1:
+                ctx_ids = ctx_ids.unsqueeze(0)
+            ctx_ids = ctx_ids.to(self.device)
 
+            # Tokenize context + continuation
+            conv.messages[1][1] = continuation
+            full_prompt = conv.get_prompt()
+            inp_ids_raw = tokenizer_image_token(full_prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
+            if isinstance(inp_ids_raw, list):
+                try:
+                    parts = [t if isinstance(t, torch.Tensor) else torch.tensor(t) for t in inp_ids_raw]
+                    input_ids = torch.cat(parts, dim=0)
+                except Exception:
+                    first = inp_ids_raw[0]
+                    input_ids = first if isinstance(first, torch.Tensor) else torch.tensor(first)
+            else:
+                input_ids = inp_ids_raw
+            if input_ids.dim() == 1:
+                input_ids = input_ids.unsqueeze(0)
+            input_ids = input_ids.to(self.device)
+
+            # Build labels to mask out context
+            labels = input_ids.clone()
+            ctx_len = int(ctx_ids.shape[1])
+            labels[0, :ctx_len] = -100
+
+            # Process visuals
+            images_arg = None
+            if visuals is not None:
+                if self._ensure_image_processor():
+                    try:
+                        processed = process_images(visuals if isinstance(visuals, list) else [visuals], self._image_processor, self._config)
+                        if isinstance(processed, list):
+                            images_arg = []
+                            for _img in processed:
+                                if _img is None:
+                                    continue
+                                images_arg.append(_img.to(dtype=torch.float16, device=self.device))
+                            if len(images_arg) == 0:
+                                images_arg = None
+                        else:
+                            images_arg = processed.to(dtype=torch.float16, device=self.device)
+                    except Exception:
+                        images_arg = None
+
+            # Forward to compute loss and greedy match
             with torch.inference_mode():
-                outputs = self.model(input_ids=input_ids, labels=labels, images=image, use_cache=True)
-            loss = outputs.get("loss")
-            logits = outputs.get("logits")
+                outputs = self.model(input_ids=input_ids, labels=labels, images=images_arg, use_cache=True)
+
+            loss = float(outputs.loss.item()) if hasattr(outputs, "loss") else float(outputs.get("loss").item())  # type: ignore[call-arg]
+            logits = outputs.logits if hasattr(outputs, "logits") else outputs.get("logits")  # type: ignore[call-arg]
             greedy_tokens = logits.argmax(dim=-1)
-            cont_toks = input_ids[:, contxt_id.shape[1] :]
-            greedy_tokens = greedy_tokens[:, contxt_id.shape[1] : input_ids.shape[1]]
-            max_equal = (greedy_tokens == cont_toks).all()
-            res.append((float(loss.item()), bool(max_equal)))
+            cont_toks = input_ids[:, ctx_len:]
+            greedy_slice = greedy_tokens[:, ctx_len : input_ids.shape[1]]
+            max_equal = bool((greedy_slice == cont_toks).all().item())
+            res.append((loss, max_equal))
             pbar.update(1)
         pbar.close()
         return res
 
     def generate_until(self, requests: List[Instance]) -> List[str]:
-        res = []
+        """Generate outputs for Simple Model (Legacy) requests.
 
-        def _collate(x):
-            toks = self.tok_encode(x[0])
-            return -len(toks), x[0]
+        Each Instance.args is expected to be a 6-tuple:
+        (contexts, all_gen_kwargs, doc_to_visual, doc_id, task, split)
+        """
+        results: List[str] = []
 
-        re_ords = utils.Collator([reg.args for reg in requests], _collate, grouping=True)
-        chunks = re_ords.get_batched(n=self.batch_size, batch_fn=None)
-        num_iters = len(requests) // self.batch_size if len(requests) % self.batch_size == 0 else len(requests) // self.batch_size + 1
-        pbar = tqdm(total=num_iters, disable=(self.rank != 0), desc="Model Responding")
+        # simple progress bar over individual requests for robustness
+        pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
-        for chunk in chunks:
-            contexts, all_gen_kwargs, doc_to_visual, doc_id, task, split = zip(*chunk)
-            task = task[0]
-            split = split[0]
-            # resolve docs defensively for the batch
-            batched_visuals = []
-            for ids in doc_id:
-                doc = self._get_doc(task, split, ids)
-                if doc is None:
-                    eval_logger.warning(f"VIRAL.generate_until: No doc found for task={task}, split={split}, doc_id={ids}. Skipping this item.")
-                    batched_visuals.append(None)
-                else:
-                    try:
-                        batched_visuals.append(doc_to_visual[0](doc))
-                    except Exception as e:
-                        eval_logger.warning(f"VIRAL.generate_until: doc_to_visual failed for task={task}, split={split}, doc_id={ids}: {e}")
-                        batched_visuals.append(None)
-            flattened_visuals = self.flatten(batched_visuals)
-            gen_kwargs = all_gen_kwargs[0]
-
-            until = [self.tok_decode(self.eot_token_id)]
-            if "until" in gen_kwargs:
-                until = gen_kwargs.pop("until")
-                if isinstance(until, str):
-                    until = [until]
-
-            if flattened_visuals:
-                eval_logger.debug(f"VIRAL.generate_until: Processing {len(flattened_visuals)} images for task={task}")
-                if not self._ensure_image_processor():
-                    eval_logger.warning(f"VIRAL.generate_until: no image_processor available; skipping image processing for task={task}")
-                    image_tensor = None
-                else:
-                    eval_logger.debug(f"VIRAL.generate_until: Image processor available, calling process_images")
-                    image_tensor = process_images(flattened_visuals, self._image_processor, self._config)
-                    eval_logger.debug(f"VIRAL.generate_until: process_images returned: {type(image_tensor)}, shape: {getattr(image_tensor, 'shape', 'N/A') if hasattr(image_tensor, 'shape') else len(image_tensor) if isinstance(image_tensor, list) else 'N/A'}")
-                # Robustly handle image_tensor type
-                if isinstance(image_tensor, list):
-                    # Remove None or empty images
-                    image_tensor = [_img for _img in image_tensor if _img is not None and hasattr(_img, 'to')]
-                    if len(image_tensor) == 0:
-                        image_tensor = None
-                    else:
-                        try:
-                            image_tensor = torch.stack([_img.to(dtype=torch.float16, device=self.device) for _img in image_tensor])
-                        except Exception as e:
-                            eval_logger.error(f"VIRAL.generate_until: Could not stack or move image_tensor to device: {e}")
-                            image_tensor = None
-                elif image_tensor is not None and hasattr(image_tensor, "to"):
-                    try:
-                        image_tensor = image_tensor.to(dtype=torch.float16, device=self.device)
-                    except Exception as e:
-                        eval_logger.error(f"VIRAL.generate_until: Could not move image_tensor to device: {e}")
-                        image_tensor = None
-                else:
-                    image_tensor = None
+        for reg in requests:
+            # Robustly unpack tuple according to Simple model contract
+            tup = reg.args if isinstance(reg.args, (list, tuple)) else (reg.args,)
+            if len(tup) == 6:
+                contexts, all_gen_kwargs, doc_to_visual, doc_id, task, split = tup  # type: ignore[misc]
             else:
-                image_tensor = None
+                # Fallback for unexpected shapes; try to unpack common subset
+                contexts = tup[0] if len(tup) > 0 else ""
+                all_gen_kwargs = tup[1] if len(tup) > 1 else {}
+                doc_to_visual = tup[2] if len(tup) > 2 else (lambda _doc: None)
+                doc_id = tup[3] if len(tup) > 3 else -1
+                task = tup[4] if len(tup) > 4 else ""
+                split = tup[5] if len(tup) > 5 else ""
 
-            question_input = []
-            for visual, context in zip(batched_visuals, contexts):
-                if image_tensor is not None and len(image_tensor) != 0 and DEFAULT_IMAGE_TOKEN not in context:
-                    image_tokens = [DEFAULT_IMAGE_TOKEN] * len(visual) if isinstance(visual, list) else [DEFAULT_IMAGE_TOKEN]
-                    image_tokens = " ".join(image_tokens)
-                    question = image_tokens + "\n" + context
-                else:
-                    question = context
-                if "llama_3" in getattr(self, "conv_template", ""):
-                    conv = copy.deepcopy(conv_templates[self.conv_template])
-                else:
-                    conv = conv_templates[getattr(self, "conv_template", "vicuna_v1")].copy()
-                conv.append_message(conv.roles[0], question)
-                conv.append_message(conv.roles[1], None)
-                prompt_question = conv.get_prompt()
-                question_input.append(prompt_question)
-
-            gen_kwargs["image_sizes"] = [flattened_visuals[idx].size for idx in range(len(flattened_visuals))] if flattened_visuals else []
-            gen_kwargs.setdefault("max_new_tokens", 1024)
-            gen_kwargs.setdefault("temperature", 0)
-            gen_kwargs.setdefault("top_p", None)
-            gen_kwargs.setdefault("num_beams", 1)
-
-            input_ids_list = [tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt") for prompt in question_input]
-            pad_token_ids = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
-            input_ids = self.pad_sequence(input_ids_list, batch_first=True, padding_value=pad_token_ids).to(self.device)
-            attention_masks = input_ids.ne(pad_token_ids).to(self.device)
-
+            # Resolve doc and visuals (Simple model criterion)
+            doc = self._get_doc(task, split, doc_id)
             try:
-                # VIRAL models have a custom generate() method that accepts images parameter
-                # Use the same pattern as loglikelihood: pass images directly to model.generate()
-                with torch.inference_mode():
-                    cont = self.model.generate(
-                        inputs=input_ids,
-                        images=image_tensor,
-                        do_sample=True if gen_kwargs["temperature"] > 0 else False,
-                        temperature=gen_kwargs["temperature"],
-                        top_p=gen_kwargs["top_p"],
-                        num_beams=gen_kwargs["num_beams"],
-                        max_new_tokens=gen_kwargs["max_new_tokens"],
-                        use_cache=self.use_cache,
-                        pad_token_id=pad_token_ids,
-                        attention_mask=attention_masks,
-                    )
-                    
-                text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
+                visuals = doc_to_visual(doc) if doc is not None else None
             except Exception as e:
-                eval_logger.error(f"Error {e} in generating")
-                text_outputs = [""] * len(question_input)
+                eval_logger.warning(f"VIRAL.generate_until: doc_to_visual failed for task={task}, split={split}, doc_id={doc_id}: {e}")
+                visuals = None
 
-            res.extend(text_outputs)
-            self.cache_hook.add_partial("generate_until", (context, gen_kwargs), text_outputs)
+            # Build the prompt: prepend image token(s) if visuals exist and token not already present
+            context_str = contexts
+            if visuals is not None and DEFAULT_IMAGE_TOKEN not in context_str:
+                num_imgs = len(visuals) if isinstance(visuals, list) else 1
+                image_tokens = " ".join([DEFAULT_IMAGE_TOKEN] * num_imgs)
+                context_str = f"{image_tokens}\n{context_str}"
+
+            # Wrap with conversation template
+            if "llama_3" in getattr(self, "conv_template", ""):
+                conv = copy.deepcopy(conv_templates[self.conv_template])
+            else:
+                conv = conv_templates[getattr(self, "conv_template", "vicuna_v1")].copy()
+            conv.append_message(conv.roles[0], context_str)
+            conv.append_message(conv.roles[1], None)
+            prompt = conv.get_prompt()
+
+            # Tokenize with support for image token placeholders
+            ids_raw = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
+            # Normalize to a single 2D tensor on device
+            if isinstance(ids_raw, list):
+                try:
+                    parts = [t if isinstance(t, torch.Tensor) else torch.tensor(t) for t in ids_raw]
+                    input_ids = torch.cat(parts, dim=0)
+                except Exception:
+                    # best-effort: take first element
+                    first = ids_raw[0]
+                    input_ids = first if isinstance(first, torch.Tensor) else torch.tensor(first)
+            else:
+                input_ids = ids_raw
+            if hasattr(input_ids, "dim") and input_ids.dim() == 1:
+                input_ids = input_ids.unsqueeze(0)
+            if hasattr(input_ids, "to"):
+                input_ids = input_ids.to(self.device)
+
+            # Prepare image tensor if any
+            images_arg = None
+            if visuals is not None:
+                if not self._ensure_image_processor():
+                    eval_logger.warning("VIRAL.generate_until: no image_processor available; generating without images.")
+                else:
+                    try:
+                        processed = process_images(visuals if isinstance(visuals, list) else [visuals], self._image_processor, self._config)
+                        # Normalize to list of tensors on the correct device/dtype
+                        if isinstance(processed, list):
+                            images_arg = []
+                            for _img in processed:
+                                if _img is None:
+                                    continue
+                                images_arg.append(_img.to(dtype=torch.float16, device=self.device))
+                            if len(images_arg) == 0:
+                                images_arg = None
+                        else:
+                            images_arg = processed.to(dtype=torch.float16, device=self.device)
+                    except Exception as e:
+                        eval_logger.warning(f"VIRAL.generate_until: image processing failed; continuing without images. Error: {e}")
+                        images_arg = None
+
+            # Generation parameters
+            gen_kwargs = dict(all_gen_kwargs) if isinstance(all_gen_kwargs, dict) else {}
+            # Stopping sequences
+            until = gen_kwargs.pop("until", None)
+            if until is None:
+                until = [self.tok_decode(self.eot_token_id)]
+            elif isinstance(until, str):
+                until = [until]
+
+            # Defaults
+            temperature = gen_kwargs.pop("temperature", 0)
+            top_p = gen_kwargs.pop("top_p", None)
+            num_beams = gen_kwargs.pop("num_beams", 1)
+            max_new_tokens = gen_kwargs.pop("max_new_tokens", 1024)
+
+            pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
+            # No padding for single-sample input; attention mask is all ones
+            attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=self.device)
+
+            # Compose stopping criteria from strings
+            input_len = int(input_ids.shape[1])
+            stopping_criteria = stop_sequences_criteria(self.tokenizer, until, initial_decoder_input_length=input_len, batch_size=1) if until else None
+
+            # Run generation
+            try:
+                with torch.inference_mode():
+                    generate_common = dict(
+                        do_sample=True if temperature and temperature > 0 else False,
+                        temperature=temperature,
+                        top_p=top_p,
+                        num_beams=num_beams,
+                        max_new_tokens=max_new_tokens,
+                        use_cache=self.use_cache,
+                        pad_token_id=pad_token_id,
+                        attention_mask=attention_mask,
+                    )
+                    if stopping_criteria is not None:
+                        generate_common["stopping_criteria"] = stopping_criteria
+
+                    if getattr(self, "_accepts_image_generate", False) and images_arg is not None:
+                        output_ids = self.model.generate(
+                            input_ids=input_ids,
+                            images=images_arg,
+                            **generate_common,
+                        )
+                    else:
+                        if images_arg is not None and not getattr(self, "_accepts_image_generate", False):
+                            eval_logger.warning("VIRAL.generate_until: Model.generate() does not accept 'images'; generating without images.")
+                        output_ids = self.model.generate(
+                            input_ids=input_ids,
+                            **generate_common,
+                        )
+
+                # Slice to only new tokens and decode
+                new_tokens = output_ids[0, input_len:]
+                text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+                # Final defensive truncation by stopping strings
+                if until:
+                    cut_idx = len(text)
+                    for s in until:
+                        if not s:
+                            continue
+                        pos = text.find(s)
+                        if pos != -1:
+                            cut_idx = min(cut_idx, pos)
+                    text = text[:cut_idx]
+
+            except Exception as e:
+                eval_logger.error(f"VIRAL.generate_until: generation error for task={task}, doc_id={doc_id}: {e}")
+                text = ""
+
+            results.append(text)
+
+            # Cache hook (best-effort)
+            try:
+                if hasattr(self, "cache_hook") and getattr(self, "cache_hook") is not None:
+                    self.cache_hook.add_partial("generate_until", (contexts, gen_kwargs), [text])
+            except Exception:
+                pass
+
             pbar.update(1)
 
-        res = re_ords.get_original(res)
         pbar.close()
-        return res
+        return results
 
     def generate_until_multi_round(self, requests) -> List[str]:
         raise NotImplementedError("TODO: Implement multi-round generation for VIRAL")
