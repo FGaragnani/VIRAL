@@ -542,16 +542,10 @@ class VIRAL(lmms):
                     attention_mask=attention_masks,
                 )
 
-                # only include image-specific kwargs when the model supports them
-                if image_tensor is not None and accepts_images:
-                    generate_kwargs["images"] = image_tensor
-                elif image_tensor is not None and not accepts_images:
-                    eval_logger.warning(f"VIRAL.generate_until: Model does not accept 'images' parameter, skipping image input for task={task}")
-
-                if accepts_image_sizes and gen_kwargs.get("image_sizes", None) is not None:
-                    generate_kwargs["image_sizes"] = gen_kwargs.get("image_sizes", None)
-
-                cont = self.model.generate(input_ids, **generate_kwargs)
+                if image_tensor is not None:
+                    cont = self.model.generate(input_ids, images=image_tensor, **generate_kwargs)
+                else:
+                    cont = self.model.generate(input_ids, **generate_kwargs)
                 text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
             except Exception as e:
                 eval_logger.error(f"Error {e} in generating")
