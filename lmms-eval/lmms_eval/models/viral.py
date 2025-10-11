@@ -515,13 +515,19 @@ class VIRAL(lmms):
                     from inspect import signature
 
                     sig = signature(gen_fn)
-                    accepts_images = "images" in sig.parameters
-                    accepts_image_sizes = "image_sizes" in sig.parameters
-                    eval_logger.debug(f"VIRAL.generate_until: Model generate signature - accepts_images: {accepts_images}, accepts_image_sizes: {accepts_image_sizes}")
+                    param_names = list(sig.parameters.keys())
+                    has_kwargs = any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
+                    accepts_images = "images" in sig.parameters or has_kwargs
+                    accepts_image_sizes = "image_sizes" in sig.parameters or has_kwargs
+                    
+                    eval_logger.debug(f"VIRAL.generate_until: Model generate parameters: {param_names}")
+                    eval_logger.debug(f"VIRAL.generate_until: Has **kwargs: {has_kwargs}")
+                    eval_logger.debug(f"VIRAL.generate_until: accepts_images: {accepts_images}, accepts_image_sizes: {accepts_image_sizes}")
                 except Exception as e:
-                    accepts_images = False
-                    accepts_image_sizes = False
-                    eval_logger.debug(f"VIRAL.generate_until: Could not inspect generate signature: {e}")
+                    # For VIRAL models, we should assume they accept images by default
+                    accepts_images = True
+                    accepts_image_sizes = True
+                    eval_logger.debug(f"VIRAL.generate_until: Could not inspect generate signature: {e}, assuming images are supported")
                     
                 eval_logger.debug(f"VIRAL.generate_until: image_tensor is None: {image_tensor is None}, accepts_images: {accepts_images}")
 
