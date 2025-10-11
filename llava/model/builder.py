@@ -107,7 +107,21 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 model = LlavaQwen2ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
-                cfg_pretrained = AutoConfig.from_pretrained(model_path)
+                # Robustly load a LLaVA config from the projector folder. AutoConfig can pick up unrelated
+                # configs (e.g., rag) if the folder contains a different config.json. Fall back to LlavaConfig.
+                try:
+                    cfg_pretrained = AutoConfig.from_pretrained(model_path)
+                    # Heuristics: ensure it's not an unintended config like Rag
+                    model_type = getattr(cfg_pretrained, 'model_type', '') or ''
+                    has_mm = any(
+                        hasattr(cfg_pretrained, attr)
+                        for attr in ('mm_vision_tower', 'vision_tower', 'vision_config')
+                    )
+                    if 'rag' in str(model_type).lower() or not has_mm:
+                        raise ValueError(f"Non-LLaVA config detected in {model_path} (model_type={model_type}); trying LlavaConfig")
+                except Exception:
+                    from llava.model.language_model.llava_llama import LlavaConfig
+                    cfg_pretrained = LlavaConfig.from_pretrained(model_path)
                 model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
 
             mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
