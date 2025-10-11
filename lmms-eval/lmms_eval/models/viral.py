@@ -655,6 +655,29 @@ class VIRAL(lmms):
                         f"image_sizes={'None' if image_sizes is None else len(image_sizes)}, "
                         f"merge={getattr(self._config,'mm_patch_merge_type', 'flat')}, ar={getattr(self._config,'image_aspect_ratio', None)}"
                     )
+                    # Additional dtype debug for multimodal path
+                    try:
+                        vt = self.model.get_vision_tower() if hasattr(self.model, 'get_vision_tower') else None
+                        vt_dtype = (next(vt.parameters()).dtype if vt is not None else None)
+                    except Exception:
+                        vt_dtype = None
+                    try:
+                        proj = self.model.get_model().mm_projector if hasattr(self.model, 'get_model') else None
+                        proj_dtype = (next(proj.parameters()).dtype if proj is not None else None)
+                    except Exception:
+                        proj_dtype = None
+                    try:
+                        img_dtype = None
+                        if images_arg is not None:
+                            if isinstance(images_arg, list) and len(images_arg) > 0 and hasattr(images_arg[0], 'dtype'):
+                                img_dtype = images_arg[0].dtype
+                            elif hasattr(images_arg, 'dtype'):
+                                img_dtype = images_arg.dtype
+                    except Exception:
+                        img_dtype = None
+                    eval_logger.debug(
+                        f"VIRAL.generate_until dtypes: model={getattr(self.model, 'dtype', None)}, vision={vt_dtype}, projector={proj_dtype}, images={img_dtype}"
+                    )
                 except Exception:
                     pass
                 with torch.inference_mode():

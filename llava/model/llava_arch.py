@@ -157,7 +157,21 @@ class LlavaMetaForCausalLM(ABC):
         return self.get_model().get_vision_tower()
 
     def encode_images(self, images):
-        image_features = self.get_model().get_vision_tower()(images)
+        # Extract features from the vision tower
+        vt = self.get_model().get_vision_tower()
+        image_features = vt(images)
+        # Align dtype with the projector to avoid matmul dtype mismatches (Half vs Float)
+        try:
+            proj = self.get_model().mm_projector
+            proj_dtype = next(proj.parameters()).dtype
+            if isinstance(image_features, list):
+                image_features = [feat.to(dtype=proj_dtype) for feat in image_features]
+            else:
+                image_features = image_features.to(dtype=proj_dtype)
+            # Ensure projector itself is in the right dtype (should already be)
+            proj.to(dtype=proj_dtype)
+        except Exception:
+            pass
         image_features = self.get_model().mm_projector(image_features)
         return image_features
 
