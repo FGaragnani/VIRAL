@@ -681,16 +681,20 @@ class VIRAL(lmms):
                 except Exception:
                     pass
                 with torch.inference_mode():
+                    do_sample = True if temperature and float(temperature) > 0 else False
                     generate_common = dict(
-                        do_sample=True if temperature and temperature > 0 else False,
-                        temperature=temperature,
-                        top_p=top_p,
+                        do_sample=do_sample,
                         num_beams=num_beams,
                         max_new_tokens=max_new_tokens,
                         use_cache=self.use_cache,
                         pad_token_id=pad_token_id,
                         attention_mask=attention_mask,
                     )
+                    if do_sample:
+                        if temperature is not None:
+                            generate_common['temperature'] = float(temperature)
+                        if top_p is not None:
+                            generate_common['top_p'] = float(top_p)
                     # Do not pass custom stopping_criteria; we'll trim decoded text instead
 
                     if getattr(self, "_accepts_image_generate", False) and images_arg is not None:

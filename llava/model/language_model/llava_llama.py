@@ -127,6 +127,8 @@ class ResidualLlamaModel(LlamaModel):
         return_dict: Optional[bool] = None,
         residual: Optional[bool] = False,
         target_layers: Optional[List[int]] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         if residual:
             assert target_layers is not None, "target_layers must be specified if residual is True"

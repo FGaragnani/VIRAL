@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=boost_usr_prod
 #SBATCH --account=IscrB_MLLM-RAG
-#SBATCH --array=0-7
+#SBATCH --array=0-1
 #SBATCH --time=05:30:00
 
 module load anaconda3/2022.05
@@ -37,7 +37,8 @@ export TRANSFORMERS_OFFLINE=1
 
 output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/${run_name}"
 
-task_list=(pope mme gqa scienceqa_img mmmu_val seedbench ai2d textvqa_val)
+# task_list=(pope mme gqa scienceqa_img mmmu_val seedbench ai2d textvqa_val)
+task_list=(pope mme)
 echo ${task_list[$SLURM_ARRAY_TASK_ID]}
 
 checkpoint_path="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/viral_stage_2/checkpoint-5000"
