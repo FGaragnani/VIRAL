@@ -506,6 +506,12 @@ class VIRAL(lmms):
                 eval_logger.warning(f"VIRAL.generate_until: doc_to_visual failed for task={task}, split={split}, doc_id={doc_id}: {e}")
                 visuals = None
 
+            # Normalize visuals: drop None items and collapse empty lists to None
+            if isinstance(visuals, list):
+                visuals = [v for v in visuals if v is not None]
+                if len(visuals) == 0:
+                    visuals = None
+
             # Build the prompt: prepend image token(s) if visuals exist and token not already present
             context_str = contexts
             if visuals is not None and DEFAULT_IMAGE_TOKEN not in context_str:
@@ -524,6 +530,20 @@ class VIRAL(lmms):
 
             # Tokenize with support for image token placeholders
             ids_raw = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
+            # Fallback if tokenization returns None/empty tensor
+            needs_fallback = False
+            if ids_raw is None:
+                needs_fallback = True
+            elif isinstance(ids_raw, list) and len(ids_raw) == 0:
+                needs_fallback = True
+            elif isinstance(ids_raw, torch.Tensor):
+                if ids_raw.numel() == 0:
+                    needs_fallback = True
+            if needs_fallback:
+                try:
+                    ids_raw = self.tokenizer(prompt, return_tensors="pt").input_ids
+                except Exception:
+                    ids_raw = torch.tensor([[self.eot_token_id]], dtype=torch.long)
             # Normalize to a single 2D tensor on device
             if isinstance(ids_raw, list):
                 try:
@@ -539,6 +559,14 @@ class VIRAL(lmms):
                 input_ids = input_ids.unsqueeze(0)
             if hasattr(input_ids, "to"):
                 input_ids = input_ids.to(self.device)
+            # Ensure 2D tensor
+            if not isinstance(input_ids, torch.Tensor) or input_ids.dim() != 2:
+                try:
+                    input_ids = torch.as_tensor(input_ids, dtype=torch.long, device=self.device)
+                    if input_ids.dim() == 1:
+                        input_ids = input_ids.unsqueeze(0)
+                except Exception:
+                    input_ids = torch.tensor([[self.eot_token_id]], dtype=torch.long, device=self.device)
 
             # Prepare image tensor if any
             images_arg = None
@@ -579,12 +607,20 @@ class VIRAL(lmms):
             max_new_tokens = gen_kwargs.pop("max_new_tokens", 1024)
 
             pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
-            # No padding for single-sample input; attention mask is all ones
-            attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=self.device)
+            # Let the model construct attention mask internally for maximum compatibility
+            attention_mask = None
 
             # Compose stopping criteria from strings
-            input_len = int(input_ids.shape[1])
-            stopping_criteria = stop_sequences_criteria(self.tokenizer, until, initial_decoder_input_length=input_len, batch_size=1) if until else None
+            input_len = int(input_ids.shape[1]) if hasattr(input_ids, 'shape') else int(len(input_ids[0]))
+            try:
+                stopping_criteria = stop_sequences_criteria(
+                    self.tokenizer,
+                    until,
+                    initial_decoder_input_length=input_len,
+                    batch_size=1,
+                ) if until else None
+            except Exception:
+                stopping_criteria = None
 
             # Run generation
             try:
