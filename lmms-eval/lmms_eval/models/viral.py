@@ -647,7 +647,6 @@ class VIRAL(lmms):
 
             # Run generation
             try:
-                # Debug context for diagnosing shape/type issues
                 try:
                     eval_logger.debug(
                         f"VIRAL.generate_until: input_ids shape={tuple(input_ids.shape) if hasattr(input_ids,'shape') else 'N/A'}, "
@@ -695,7 +694,6 @@ class VIRAL(lmms):
                             generate_common['temperature'] = float(temperature)
                         if top_p is not None:
                             generate_common['top_p'] = float(top_p)
-                    # Do not pass custom stopping_criteria; we'll trim decoded text instead
 
                     if getattr(self, "_accepts_image_generate", False) and images_arg is not None:
                         # Only pass image_sizes when required by config

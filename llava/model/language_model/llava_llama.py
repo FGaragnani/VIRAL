@@ -154,12 +154,38 @@ class ResidualLlamaModel(LlamaModel):
             if use_cache:
                 use_cache = False
 
+        def _infer_past_len(pkv, seq_length):
+            try:
+                if pkv is None:
+                    return 0
+                # New-style cache API
+                fn = getattr(pkv, 'get_usable_length', None)
+                if callable(fn):
+                    return int(fn(seq_length))
+                fn2 = getattr(pkv, 'get_seq_length', None)
+                if callable(fn2):
+                    return int(fn2())
+                # Legacy list/tuple of key/value tensors
+                if isinstance(pkv, (list, tuple)) and len(pkv) > 0 and isinstance(pkv[0], (list, tuple)) and len(pkv[0]) > 0:
+                    k0 = pkv[0][0]
+                    if hasattr(k0, 'shape') and len(k0.shape) >= 4:
+                        return int(k0.shape[-2])
+            except Exception:
+                pass
+            return 0
+
         past_key_values_length = 0
+        use_legacy_cache = False
         if use_cache:
-            use_legacy_cache = not isinstance(past_key_values, Cache)
-            if use_legacy_cache:
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            past_key_values_length = past_key_values.get_usable_length(seq_length)
+            if past_key_values is not None and not isinstance(past_key_values, Cache):
+                use_legacy_cache = True
+                # Try to wrap legacy cache, but tolerate environments without the method
+                try:
+                    past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+                    use_legacy_cache = False
+                except Exception:
+                    pass
+            past_key_values_length = _infer_past_len(past_key_values, seq_length)
 
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
@@ -239,7 +265,10 @@ class ResidualLlamaModel(LlamaModel):
 
         next_cache = None
         if use_cache:
-            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
+            if use_legacy_cache and hasattr(next_decoder_cache, 'to_legacy_cache'):
+                next_cache = next_decoder_cache.to_legacy_cache()
+            else:
+                next_cache = next_decoder_cache
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
