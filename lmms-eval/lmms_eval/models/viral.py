@@ -495,16 +495,18 @@ class VIRAL(lmms):
 
             try:
                 # Defensive: some model.generate implementations (e.g., HF Transformers
-                # or custom wrappers) do not accept an `image_sizes` kwarg and will
+                # or custom wrappers) do not accept image-related kwargs and will
                 # raise a helpful error listing unused model_kwargs. Inspect the
-                # generate signature and only pass `image_sizes` if supported.
+                # generate signature and only pass supported kwargs.
                 gen_fn = getattr(self.model, "generate")
                 try:
                     from inspect import signature
 
                     sig = signature(gen_fn)
+                    accepts_images = "images" in sig.parameters
                     accepts_image_sizes = "image_sizes" in sig.parameters
                 except Exception:
+                    accepts_images = False
                     accepts_image_sizes = False
 
                 generate_kwargs: dict = dict(
@@ -518,10 +520,11 @@ class VIRAL(lmms):
                     attention_mask=attention_masks,
                 )
 
-                # only include image-specific kwargs when applicable
-                if image_tensor is not None:
-                    # older LLaVA-style models expect `images` kwarg
+                # only include image-specific kwargs when the model supports them
+                if image_tensor is not None and accepts_images:
                     generate_kwargs["images"] = image_tensor
+                elif image_tensor is not None and not accepts_images:
+                    eval_logger.warning(f"VIRAL.generate_until: Model does not accept 'images' parameter, skipping image input for task={task}")
 
                 if accepts_image_sizes and gen_kwargs.get("image_sizes", None) is not None:
                     generate_kwargs["image_sizes"] = gen_kwargs.get("image_sizes", None)
