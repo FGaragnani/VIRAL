@@ -16,6 +16,7 @@
 import os
 import warnings
 import shutil
+from types import SimpleNamespace
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 import torch
@@ -101,10 +102,48 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=True)
                 cfg_pretrained = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
                 model = LlavaMptForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+                # Ensure vision modules exist if not present
+                try:
+                    if getattr(model, 'get_vision_tower', None) is not None and model.get_vision_tower() is None:
+                        cfg = model.config
+                        vt_path = getattr(cfg, 'mm_vision_tower', None) or getattr(cfg, 'vision_tower', None)
+                        if vt_path is None and hasattr(cfg, 'vision_config') and hasattr(cfg.vision_config, 'name_or_path'):
+                            vt_path = cfg.vision_config.name_or_path
+                        if vt_path is None:
+                            vt_path = 'openai/clip-vit-large-patch14-336'
+                        args = SimpleNamespace(
+                            vision_tower=vt_path,
+                            mm_vision_select_layer=getattr(cfg, 'mm_vision_select_layer', -2),
+                            mm_vision_select_feature=getattr(cfg, 'mm_vision_select_feature', 'patch'),
+                            pretrain_mm_mlp_adapter=None,
+                            mm_patch_merge_type=getattr(cfg, 'mm_patch_merge_type', 'flat'),
+                        )
+                        model.get_model().initialize_vision_modules(args, fsdp=None)
+                except Exception:
+                    pass
             elif 'qwen2' in model_name.lower():
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
                 cfg_pretrained = AutoConfig.from_pretrained(model_path)
                 model = LlavaQwen2ForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+                # Ensure vision modules exist if not present
+                try:
+                    if getattr(model, 'get_vision_tower', None) is not None and model.get_vision_tower() is None:
+                        cfg = model.config
+                        vt_path = getattr(cfg, 'mm_vision_tower', None) or getattr(cfg, 'vision_tower', None)
+                        if vt_path is None and hasattr(cfg, 'vision_config') and hasattr(cfg.vision_config, 'name_or_path'):
+                            vt_path = cfg.vision_config.name_or_path
+                        if vt_path is None:
+                            vt_path = 'openai/clip-vit-large-patch14-336'
+                        args = SimpleNamespace(
+                            vision_tower=vt_path,
+                            mm_vision_select_layer=getattr(cfg, 'mm_vision_select_layer', -2),
+                            mm_vision_select_feature=getattr(cfg, 'mm_vision_select_feature', 'patch'),
+                            pretrain_mm_mlp_adapter=None,
+                            mm_patch_merge_type=getattr(cfg, 'mm_patch_merge_type', 'flat'),
+                        )
+                        model.get_model().initialize_vision_modules(args, fsdp=None)
+                except Exception:
+                    pass
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
                 # Robustly load a LLaVA config from the projector folder. AutoConfig can pick up unrelated
@@ -123,6 +162,25 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                     from llava.model.language_model.llava_llama import LlavaConfig
                     cfg_pretrained = LlavaConfig.from_pretrained(model_path)
                 model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+                # Ensure vision modules exist if not present
+                try:
+                    if getattr(model, 'get_vision_tower', None) is not None and model.get_vision_tower() is None:
+                        cfg = model.config
+                        vt_path = getattr(cfg, 'mm_vision_tower', None) or getattr(cfg, 'vision_tower', None)
+                        if vt_path is None and hasattr(cfg, 'vision_config') and hasattr(cfg.vision_config, 'name_or_path'):
+                            vt_path = cfg.vision_config.name_or_path
+                        if vt_path is None:
+                            vt_path = 'openai/clip-vit-large-patch14-336'
+                        args = SimpleNamespace(
+                            vision_tower=vt_path,
+                            mm_vision_select_layer=getattr(cfg, 'mm_vision_select_layer', -2),
+                            mm_vision_select_feature=getattr(cfg, 'mm_vision_select_feature', 'patch'),
+                            pretrain_mm_mlp_adapter=None,
+                            mm_patch_merge_type=getattr(cfg, 'mm_patch_merge_type', 'flat'),
+                        )
+                        model.get_model().initialize_vision_modules(args, fsdp=None)
+                except Exception:
+                    pass
 
             mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
             mm_projector_weights = {k: v.to(torch.float16) for k, v in mm_projector_weights.items()}
@@ -186,11 +244,14 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         model.resize_token_embeddings(len(tokenizer))
 
         vision_tower = model.get_vision_tower()
-        if not vision_tower.is_loaded:
-            vision_tower.load_model(device_map=device_map)
-        if device_map != 'auto':
-            vision_tower.to(device=device_map, dtype=torch.float16)
-        image_processor = vision_tower.image_processor
+        if vision_tower is not None:
+            if not getattr(vision_tower, 'is_loaded', False):
+                vision_tower.load_model(device_map=device_map)
+            if device_map != 'auto':
+                vision_tower.to(device=device_map, dtype=torch.float16)
+            image_processor = getattr(vision_tower, 'image_processor', None)
+        else:
+            image_processor = None
 
     if hasattr(model.config, "max_sequence_length"):
         context_len = model.config.max_sequence_length
