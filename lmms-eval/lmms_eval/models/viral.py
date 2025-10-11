@@ -506,31 +506,7 @@ class VIRAL(lmms):
             attention_masks = input_ids.ne(pad_token_ids).to(self.device)
 
             try:
-                # Defensive: some model.generate implementations (e.g., HF Transformers
-                # or custom wrappers) do not accept image-related kwargs and will
-                # raise a helpful error listing unused model_kwargs. Inspect the
-                # generate signature and only pass supported kwargs.
-                gen_fn = getattr(self.model, "generate")
-                try:
-                    from inspect import signature
-
-                    sig = signature(gen_fn)
-                    param_names = list(sig.parameters.keys())
-                    has_kwargs = any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
-                    accepts_images = "images" in sig.parameters or has_kwargs
-                    accepts_image_sizes = "image_sizes" in sig.parameters or has_kwargs
-                    
-                    eval_logger.debug(f"VIRAL.generate_until: Model generate parameters: {param_names}")
-                    eval_logger.debug(f"VIRAL.generate_until: Has **kwargs: {has_kwargs}")
-                    eval_logger.debug(f"VIRAL.generate_until: accepts_images: {accepts_images}, accepts_image_sizes: {accepts_image_sizes}")
-                except Exception as e:
-                    # For VIRAL models, we should assume they accept images by default
-                    accepts_images = True
-                    accepts_image_sizes = True
-                    eval_logger.debug(f"VIRAL.generate_until: Could not inspect generate signature: {e}, assuming images are supported")
-                    
-                eval_logger.debug(f"VIRAL.generate_until: image_tensor is None: {image_tensor is None}, accepts_images: {accepts_images}")
-
+                # VIRAL models don't accept images in generate(), but we can try different approaches
                 generate_kwargs: dict = dict(
                     do_sample=True if gen_kwargs["temperature"] > 0 else False,
                     temperature=gen_kwargs["temperature"],
@@ -541,11 +517,31 @@ class VIRAL(lmms):
                     pad_token_id=pad_token_ids,
                     attention_mask=attention_masks,
                 )
-
+                
+                # Try different generation strategies based on whether we have images
                 if image_tensor is not None:
-                    cont = self.model.generate(input_ids, images=image_tensor, **generate_kwargs)
+                    # Strategy 1: Try to use generate with input_embeds if available
+                    try:
+                        # Get input embeddings that include image features
+                        with torch.inference_mode():
+                            model_inputs = self.model.prepare_inputs_for_generation(
+                                input_ids, images=image_tensor, **generate_kwargs
+                            )
+                        cont = self.model.generate(**model_inputs)
+                        eval_logger.debug("VIRAL.generate_until: Used prepare_inputs_for_generation with images")
+                    except Exception as e1:
+                        eval_logger.debug(f"VIRAL.generate_until: prepare_inputs_for_generation failed: {e1}")
+                        # Strategy 2: Try standard generate without images (images might be embedded in input_ids)
+                        try:
+                            cont = self.model.generate(input_ids, **generate_kwargs)
+                            eval_logger.warning("VIRAL.generate_until: Generated without passing images explicitly - images may be embedded in tokens")
+                        except Exception as e2:
+                            eval_logger.error(f"VIRAL.generate_until: All generation strategies failed: {e1}, {e2}")
+                            raise e2
                 else:
+                    # No images, standard generation
                     cont = self.model.generate(input_ids, **generate_kwargs)
+                    
                 text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
             except Exception as e:
                 eval_logger.error(f"Error {e} in generating")
