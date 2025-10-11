@@ -710,22 +710,26 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             raise NotImplementedError("`inputs_embeds` is not supported")
 
         if images is not None:
-            (
-                inputs,
-                position_ids,
-                attention_mask,
-                _,
-                inputs_embeds,
-                _
-            ) = self.prepare_inputs_labels_for_multimodal(
-                inputs,
-                position_ids,
-                attention_mask,
-                None,
-                None,
-                images,
-                image_sizes=image_sizes
-            )
+            try:
+                out = self.prepare_inputs_labels_for_multimodal(
+                    inputs,
+                    position_ids,
+                    attention_mask,
+                    None,
+                    None,
+                    images,
+                    image_sizes=image_sizes
+                )
+                # Validate output structure (6-tuple)
+                if out is None or not isinstance(out, tuple) or len(out) != 6:
+                    raise RuntimeError("prepare_inputs_labels_for_multimodal returned invalid output")
+                inputs, position_ids, attention_mask, _, inputs_embeds, _ = out
+                if inputs_embeds is None:
+                    # Fallback to text-only embeds if multimodal path produced None embeds
+                    inputs_embeds = self.get_model().embed_tokens(inputs)
+            except Exception:
+                # Last-resort fallback: ignore images and proceed with text-only
+                inputs_embeds = self.get_model().embed_tokens(inputs)
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
 
