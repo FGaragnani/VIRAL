@@ -97,14 +97,39 @@ class VIRAL(lmms):
         if self._image_processor is None:
             try:
                 from transformers import AutoImageProcessor
-                # Try to get vision config path from model config
-                vision_path = None
-                if self._config is not None and hasattr(self._config, "vision_config"):
-                    vision_path = getattr(self._config.vision_config, "name_or_path", None)
-                if vision_path is None:
-                    # fallback to model_name or name_or_path
-                    vision_path = model_name or name_or_path
-                self._image_processor = AutoImageProcessor.from_pretrained(vision_path)
+                # Try multiple fallback strategies to find vision processor
+                vision_paths = []
+                
+                # 1. Check model config for vision tower path
+                if self._config is not None:
+                    if hasattr(self._config, "vision_tower") and self._config.vision_tower:
+                        vision_paths.append(self._config.vision_tower)
+                    if hasattr(self._config, "mm_vision_tower") and self._config.mm_vision_tower:
+                        vision_paths.append(self._config.mm_vision_tower)
+                    if hasattr(self._config, "vision_config") and hasattr(self._config.vision_config, "name_or_path"):
+                        vision_paths.append(self._config.vision_config.name_or_path)
+                
+                # 2. Common vision model defaults for LLaVA-style models
+                vision_paths.extend([
+                    "openai/clip-vit-large-patch14-336",
+                    "openai/clip-vit-large-patch14",
+                    model_name or name_or_path
+                ])
+                
+                # Try each path until one works
+                for vision_path in vision_paths:
+                    try:
+                        eval_logger.debug(f"VIRAL: Trying to load image processor from {vision_path}")
+                        self._image_processor = AutoImageProcessor.from_pretrained(vision_path)
+                        eval_logger.info(f"VIRAL: Successfully loaded image processor from {vision_path}")
+                        break
+                    except Exception as e:
+                        eval_logger.debug(f"VIRAL: Failed to load image processor from {vision_path}: {e}")
+                        continue
+                
+                if self._image_processor is None:
+                    eval_logger.error(f"VIRAL: Could not load image processor from any source. Tried: {vision_paths}")
+                    
             except Exception as e:
                 eval_logger.warning(f"VIRAL: Could not automatically load image processor: {e}")
                 self._image_processor = None
