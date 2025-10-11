@@ -506,41 +506,21 @@ class VIRAL(lmms):
             attention_masks = input_ids.ne(pad_token_ids).to(self.device)
 
             try:
-                # VIRAL models don't accept images in generate(), but we can try different approaches
-                generate_kwargs: dict = dict(
-                    do_sample=True if gen_kwargs["temperature"] > 0 else False,
-                    temperature=gen_kwargs["temperature"],
-                    top_p=gen_kwargs["top_p"],
-                    num_beams=gen_kwargs["num_beams"],
-                    max_new_tokens=gen_kwargs["max_new_tokens"],
-                    use_cache=self.use_cache,
-                    pad_token_id=pad_token_ids,
-                    attention_mask=attention_masks,
-                )
-                
-                # Try different generation strategies based on whether we have images
-                if image_tensor is not None:
-                    # Strategy 1: Try to use generate with input_embeds if available
-                    try:
-                        # Get input embeddings that include image features
-                        with torch.inference_mode():
-                            model_inputs = self.model.prepare_inputs_for_generation(
-                                input_ids, images=image_tensor, **generate_kwargs
-                            )
-                        cont = self.model.generate(**model_inputs)
-                        eval_logger.debug("VIRAL.generate_until: Used prepare_inputs_for_generation with images")
-                    except Exception as e1:
-                        eval_logger.debug(f"VIRAL.generate_until: prepare_inputs_for_generation failed: {e1}")
-                        # Strategy 2: Try standard generate without images (images might be embedded in input_ids)
-                        try:
-                            cont = self.model.generate(input_ids, **generate_kwargs)
-                            eval_logger.warning("VIRAL.generate_until: Generated without passing images explicitly - images may be embedded in tokens")
-                        except Exception as e2:
-                            eval_logger.error(f"VIRAL.generate_until: All generation strategies failed: {e1}, {e2}")
-                            raise e2
-                else:
-                    # No images, standard generation
-                    cont = self.model.generate(input_ids, **generate_kwargs)
+                # VIRAL models have a custom generate() method that accepts images parameter
+                # Use the same pattern as loglikelihood: pass images directly to model.generate()
+                with torch.inference_mode():
+                    cont = self.model.generate(
+                        inputs=input_ids,
+                        images=image_tensor,
+                        do_sample=True if gen_kwargs["temperature"] > 0 else False,
+                        temperature=gen_kwargs["temperature"],
+                        top_p=gen_kwargs["top_p"],
+                        num_beams=gen_kwargs["num_beams"],
+                        max_new_tokens=gen_kwargs["max_new_tokens"],
+                        use_cache=self.use_cache,
+                        pad_token_id=pad_token_ids,
+                        attention_mask=attention_masks,
+                    )
                     
                 text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
             except Exception as e:
