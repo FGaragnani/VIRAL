@@ -650,26 +650,32 @@ class VIRAL(lmms):
                         mm_merge = getattr(self._config, 'mm_patch_merge_type', 'flat')
                         aspect = getattr(self._config, 'image_aspect_ratio', None)
                         pass_sizes = (aspect == 'anyres') or (isinstance(mm_merge, str) and mm_merge.startswith('spatial'))
+                        # Determine whether to pass inputs or input_ids based on generate signature
+                        try:
+                            gen_sig = inspect.signature(self.model.generate)
+                            use_inputs_kw = 'inputs' in gen_sig.parameters
+                        except Exception:
+                            use_inputs_kw = True
+                        gen_call_common = dict(images=images_arg, **generate_common)
                         if pass_sizes and image_sizes is not None:
-                            output_ids = self.model.generate(
-                                input_ids=input_ids,
-                                images=images_arg,
-                                image_sizes=image_sizes,
-                                **generate_common,
-                            )
+                            gen_call_common['image_sizes'] = image_sizes
+                        if use_inputs_kw:
+                            output_ids = self.model.generate(inputs=input_ids, **gen_call_common)
                         else:
-                            output_ids = self.model.generate(
-                                input_ids=input_ids,
-                                images=images_arg,
-                                **generate_common,
-                            )
+                            output_ids = self.model.generate(input_ids=input_ids, **gen_call_common)
                     else:
                         if images_arg is not None and not getattr(self, "_accepts_image_generate", False):
                             eval_logger.warning("VIRAL.generate_until: Model.generate() does not accept 'images'; generating without images.")
-                        output_ids = self.model.generate(
-                            input_ids=input_ids,
-                            **generate_common,
-                        )
+                        # Determine whether to pass inputs or input_ids based on generate signature (LLaVA override uses `inputs`)
+                        try:
+                            gen_sig = inspect.signature(self.model.generate)
+                            use_inputs_kw = 'inputs' in gen_sig.parameters
+                        except Exception:
+                            use_inputs_kw = True
+                        if use_inputs_kw:
+                            output_ids = self.model.generate(inputs=input_ids, **generate_common)
+                        else:
+                            output_ids = self.model.generate(input_ids=input_ids, **generate_common)
 
                 # HF may return a GenerateOutput struct; extract sequences if present
                 if hasattr(output_ids, "sequences"):
