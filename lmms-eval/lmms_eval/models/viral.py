@@ -268,6 +268,29 @@ class VIRAL(lmms):
             except Exception:
                 return x
 
+    def _ensure_image_processor(self) -> bool:
+        """Attempt to lazily populate self._image_processor if missing.
+
+        Returns True if an image processor is available after this call.
+        """
+        if getattr(self, "_image_processor", None) is not None:
+            return True
+        try:
+            # try to create an AutoImageProcessor from model config if possible
+            from transformers import AutoImageProcessor
+
+            cfg = getattr(self, "_config", None)
+            if cfg is not None and hasattr(cfg, "vision_config") and getattr(cfg.vision_config, "name_or_path", None):
+                try:
+                    self._image_processor = AutoImageProcessor.from_pretrained(cfg.vision_config.name_or_path)
+                    return True
+                except Exception:
+                    pass
+        except Exception:
+            # transformers not available or other issue; fall through
+            pass
+        return False
+
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
         # Basic implementation similar to Llava/LlavaHf
         res = []
@@ -310,7 +333,11 @@ class VIRAL(lmms):
             labels = input_ids.clone()
             labels[0, : contxt_id.shape[1]] = -100
             if visuals:
-                image = process_images(visuals, self._image_processor, self._config)
+                if not self._ensure_image_processor():
+                    eval_logger.warning(f"VIRAL.loglikelihood: no image_processor available; skipping image processing for task={task}, doc_id={doc_id}")
+                    image = None
+                else:
+                    image = process_images(visuals, self._image_processor, self._config)
                 if isinstance(image, list):
                     try:
                         image = [
@@ -377,7 +404,11 @@ class VIRAL(lmms):
                     until = [until]
 
             if flattened_visuals:
-                image_tensor = process_images(flattened_visuals, self._image_processor, self._config)
+                if not self._ensure_image_processor():
+                    eval_logger.warning(f"VIRAL.generate_until: no image_processor available; skipping image processing for task={task}")
+                    image_tensor = None
+                else:
+                    image_tensor = process_images(flattened_visuals, self._image_processor, self._config)
                 if isinstance(image_tensor, list):
                     try:
                         image_tensor = [
