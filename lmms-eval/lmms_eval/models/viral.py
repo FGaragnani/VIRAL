@@ -446,22 +446,34 @@ class VIRAL(lmms):
                     until = [until]
 
             if flattened_visuals:
+                eval_logger.debug(f"VIRAL.generate_until: Processing {len(flattened_visuals)} images for task={task}")
                 if not self._ensure_image_processor():
                     eval_logger.warning(f"VIRAL.generate_until: no image_processor available; skipping image processing for task={task}")
                     image_tensor = None
                 else:
+                    eval_logger.debug(f"VIRAL.generate_until: Image processor available, calling process_images")
                     image_tensor = process_images(flattened_visuals, self._image_processor, self._config)
+                    eval_logger.debug(f"VIRAL.generate_until: process_images returned: {type(image_tensor)}, shape: {getattr(image_tensor, 'shape', 'N/A') if hasattr(image_tensor, 'shape') else len(image_tensor) if isinstance(image_tensor, list) else 'N/A'}")
+                # Robustly handle image_tensor type
                 if isinstance(image_tensor, list):
+                    # Remove None or empty images
+                    image_tensor = [_img for _img in image_tensor if _img is not None and hasattr(_img, 'to')]
+                    if len(image_tensor) == 0:
+                        image_tensor = None
+                    else:
+                        try:
+                            image_tensor = torch.stack([_img.to(dtype=torch.float16, device=self.device) for _img in image_tensor])
+                        except Exception as e:
+                            eval_logger.error(f"VIRAL.generate_until: Could not stack or move image_tensor to device: {e}")
+                            image_tensor = None
+                elif image_tensor is not None and hasattr(image_tensor, "to"):
                     try:
-                        image_tensor = [
-                            _image.to(dtype=torch.float16, device=self.device) if hasattr(_image, "to") else _image
-                            for _image in image_tensor
-                        ]
-                    except Exception:
-                        pass
-                else:
-                    if hasattr(image_tensor, "to"):
                         image_tensor = image_tensor.to(dtype=torch.float16, device=self.device)
+                    except Exception as e:
+                        eval_logger.error(f"VIRAL.generate_until: Could not move image_tensor to device: {e}")
+                        image_tensor = None
+                else:
+                    image_tensor = None
             else:
                 image_tensor = None
 
@@ -505,9 +517,13 @@ class VIRAL(lmms):
                     sig = signature(gen_fn)
                     accepts_images = "images" in sig.parameters
                     accepts_image_sizes = "image_sizes" in sig.parameters
-                except Exception:
+                    eval_logger.debug(f"VIRAL.generate_until: Model generate signature - accepts_images: {accepts_images}, accepts_image_sizes: {accepts_image_sizes}")
+                except Exception as e:
                     accepts_images = False
                     accepts_image_sizes = False
+                    eval_logger.debug(f"VIRAL.generate_until: Could not inspect generate signature: {e}")
+                    
+                eval_logger.debug(f"VIRAL.generate_until: image_tensor is None: {image_tensor is None}, accepts_images: {accepts_images}")
 
                 generate_kwargs: dict = dict(
                     do_sample=True if gen_kwargs["temperature"] > 0 else False,
