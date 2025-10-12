@@ -130,6 +130,28 @@ class ResidualLlamaModel(LlamaModel):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+        # Fast path: Delegate to upstream LlamaModel implementation when using modern generation flow
+        # (cache_position/SDPA/FA2). This ensures correct position_embeddings handling.
+        try:
+            use_fa2 = getattr(self, "_use_flash_attention_2", False)
+            use_sdpa = getattr(self, "_use_sdpa", False)
+            if cache_position is not None or use_fa2 or use_sdpa:
+                return super().forward(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=inputs_embeds,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                    return_dict=return_dict,
+                    cache_position=cache_position,
+                    **kwargs,
+                )
+        except Exception:
+            # If delegation fails, fall back to legacy path below
+            pass
         if residual:
             assert target_layers is not None, "target_layers must be specified if residual is True"
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -538,6 +560,23 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             else:
                 # Pure text path
                 inputs_embeds = self.get_model().embed_tokens(input_ids)
+            # If we already have embeddings (multimodal or text) and we're in inference, delegate to base Llama forward
+            # to ensure modern generation (cache_position/rotary embeddings) is handled correctly.
+            if inputs_embeds is not None and not self.training:
+                input_ids = None
+                return super().forward(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=inputs_embeds,
+                    labels=labels,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                    return_dict=return_dict,
+                    cache_position=cache_position,
+                )
         
         # Robustly derive image token mask; handle cases where input_ids is None (e.g., first step with inputs_embeds)
         if input_ids is not None:
