@@ -894,20 +894,44 @@ class VIRAL(lmms):
                                 except Exception:
                                     pass
                                 inputs_embeds = self.model.get_model().embed_tokens(ids_for_embed)
+                            # Ensure we have a proper attention mask for inputs_embeds
+                            attn_for_embeds = new_attention_mask
+                            if attn_for_embeds is None and isinstance(inputs_embeds, torch.Tensor):
+                                attn_for_embeds = torch.ones(
+                                    (inputs_embeds.shape[0], inputs_embeds.shape[1]),
+                                    dtype=torch.long,
+                                    device=inputs_embeds.device,
+                                )
                             # Log outgoing kwargs to model.generate
                             if debug_this:
                                 try:
-                                    dbg_keys = sorted([k for k in generate_common.keys() if k not in ("images", "image_sizes")])
-                                    eval_logger.debug(f"VIRAL DEBUG: calling model.generate with keys={dbg_keys} and using inputs_embeds only")
+                                    dbg_keys = sorted([k for k in generate_common.keys() if k not in ("images", "image_sizes", "attention_mask", "position_ids")])
+                                    eval_logger.debug(
+                                        f"VIRAL DEBUG: calling model.generate with inputs_embeds shape={tuple(inputs_embeds.shape)}; "
+                                        f"pos_ids={'None' if new_position_ids is None else tuple(new_position_ids.shape)}; "
+                                        f"attn_mask={'None' if attn_for_embeds is None else tuple(attn_for_embeds.shape)}; "
+                                        f"other_keys={dbg_keys}"
+                                    )
                                 except Exception:
                                     pass
+                            # Build a clean kwargs without attention keys to avoid duplication
+                            gen_clean = {k: v for k, v in generate_common.items() if k not in ("attention_mask", "position_ids")}
                             output_ids = self.model.generate(
                                 inputs_embeds=inputs_embeds,
-                                **generate_common,
+                                attention_mask=attn_for_embeds,
+                                position_ids=new_position_ids,
+                                **gen_clean,
                             )
                         except Exception as gen_e:
                             # Fallback: retry generation without images (text-only) to avoid total failure
-                            eval_logger.warning(f"VIRAL.generate_until: multimodal prep/generate failed; retrying text-only. Error: {gen_e}")
+                            try:
+                                eval_logger.exception(
+                                    f"VIRAL.generate_until: multimodal prep/generate failed; retrying text-only. Error: {gen_e}"
+                                )
+                            except Exception:
+                                eval_logger.warning(
+                                    f"VIRAL.generate_until: multimodal prep/generate failed; retrying text-only. Error: {gen_e}"
+                                )
                             if debug_this:
                                 try:
                                     eval_logger.debug(f"VIRAL DEBUG: generate_common on fallback keys={sorted(list(generate_common.keys()))}")
@@ -964,7 +988,14 @@ class VIRAL(lmms):
                     text = text[:cut_idx]
 
             except Exception as e:
-                eval_logger.error(f"VIRAL.generate_until: generation error for task={task}, doc_id={doc_id}: {e}")
+                try:
+                    eval_logger.exception(
+                        f"VIRAL.generate_until: generation error for task={task}, doc_id={doc_id}: {e}"
+                    )
+                except Exception:
+                    eval_logger.error(
+                        f"VIRAL.generate_until: generation error for task={task}, doc_id={doc_id}: {e}"
+                    )
                 text = ""
 
             results.append(text)
