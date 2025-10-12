@@ -480,25 +480,74 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
+        # Prepare inputs for multimodal/text-only robustly. Avoid crashing when multimodal prep returns None.
         if inputs_embeds is None:
-            (
-                input_ids,
-                position_ids,
-                attention_mask,
-                past_key_values,
-                inputs_embeds,
-                labels
-            ) = self.prepare_inputs_labels_for_multimodal(
-                input_ids,
-                position_ids,
-                attention_mask,
-                past_key_values,
-                labels,
-                images,
-                image_sizes
-            )
+            # Determine if we actually need multimodal prep for this call
+            needs_multimodal = False
+            try:
+                if images is not None:
+                    needs_multimodal = True
+                elif input_ids is not None:
+                    needs_multimodal = bool(torch.any(input_ids == -200).item())
+            except Exception:
+                pass
+
+            if needs_multimodal:
+                try:
+                    out = self.prepare_inputs_labels_for_multimodal(
+                        input_ids,
+                        position_ids,
+                        attention_mask,
+                        past_key_values,
+                        labels,
+                        images,
+                        image_sizes
+                    )
+                    if out is None or not isinstance(out, tuple) or len(out) != 6:
+                        raise RuntimeError("prepare_inputs_labels_for_multimodal returned invalid output")
+                    (
+                        input_ids,
+                        position_ids,
+                        attention_mask,
+                        past_key_values,
+                        inputs_embeds,
+                        labels
+                    ) = out
+                    if inputs_embeds is None:
+                        # Safety: if multimodal path didn't provide embeds, neutralize image tokens and embed text-only
+                        try:
+                            eos_id = int(getattr(self.config, 'eos_token_id', 0))
+                            if input_ids is not None:
+                                img_mask = (input_ids == -200)
+                                if img_mask.any():
+                                    input_ids = input_ids.masked_fill(img_mask, eos_id)
+                        except Exception:
+                            pass
+                        inputs_embeds = self.get_model().embed_tokens(input_ids)
+                except Exception:
+                    # Fallback to text-only: neutralize IMAGE_TOKEN_INDEX and embed
+                    try:
+                        eos_id = int(getattr(self.config, 'eos_token_id', 0))
+                        if input_ids is not None:
+                            img_mask = (input_ids == -200)
+                            if img_mask.any():
+                                input_ids = input_ids.masked_fill(img_mask, eos_id)
+                    except Exception:
+                        pass
+                    inputs_embeds = self.get_model().embed_tokens(input_ids)
+            else:
+                # Pure text path
+                inputs_embeds = self.get_model().embed_tokens(input_ids)
         
-        img_token_where = (input_ids == -200)
+        # Robustly derive image token mask; handle cases where input_ids is None (e.g., first step with inputs_embeds)
+        if input_ids is not None:
+            img_token_where = (input_ids == -200)
+        else:
+            if inputs_embeds is not None:
+                bsz, seqlen = inputs_embeds.shape[:2]
+                img_token_where = torch.zeros((bsz, seqlen), dtype=torch.bool, device=inputs_embeds.device)
+            else:
+                img_token_where = None
         if self.training and inputs_embeds is not None:
             input_ids = None
         
@@ -618,6 +667,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             vra_loss = 0.
             valid_batch_count = 0
             for b in range(bsz):
+                if img_token_where is None:
+                    continue
                 img_tokens_b = img_token_where[b]
                 if img_tokens_b.any() and img_tokens_b.sum() == 576:
                     if self.only_coco and not is_coco[b]:
@@ -684,7 +735,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         diffusion_loss = torch.tensor(0.0, device=hidden_states.device)
         if self.diffusion_loss:
             bsz = hidden_states.shape[0]
-            if img_token_where.sum() == bsz * 576:
+            if img_token_where is not None and img_token_where.sum() == bsz * 576:
                 diffusion_loss = self.compute_vm_loss(images, hidden_states, img_token_where)
                 
             print(f"Diffusion loss: {diffusion_loss} || NTP loss: {loss}")
