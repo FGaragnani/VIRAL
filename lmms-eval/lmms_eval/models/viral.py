@@ -6,12 +6,10 @@ import warnings
 from datetime import timedelta
 from typing import List, Optional, Tuple, Union, Any, Dict, cast
 
-import numpy as np
-import soundfile as sf
+
 import torch
 from accelerate import Accelerator, DistributedType, InitProcessGroupKwargs
 from accelerate.state import AcceleratorState
-from decord import VideoReader, cpu
 from packaging import version
 from PIL import Image
 from tqdm import tqdm
@@ -40,6 +38,23 @@ except Exception as e:
 
 @register_model("viral")
 class VIRAL(lmms):
+    def _check_llava_imports(self):
+        # Check that all required LLaVA symbols are available, else raise ImportError
+        required = [
+            'DEFAULT_IMAGE_TOKEN', 'IMAGE_TOKEN_INDEX', 'conv_templates',
+            'get_model_name_from_path', 'process_images', 'tokenizer_image_token', 'load_pretrained_model'
+        ]
+        missing = [s for s in required if s not in globals()]
+        if missing:
+            raise ImportError(f"LLaVA is not installed or missing required symbols: {missing}. Please install LLaVA to use this model.")
+
+    @property
+    def rank(self):
+        return getattr(self, '_rank', 0)
+
+    @property
+    def world_size(self):
+        return getattr(self, '_world_size', 1)
     """
     VIRAL wrapper model that loads an underlying LLaVA-style model using
     `load_pretrained_model` and implements the lmms interface.
@@ -55,13 +70,14 @@ class VIRAL(lmms):
         device_map: str = "auto",
         dtype: Optional[Union[str, torch.dtype]] = "auto",
         attn_implementation: Optional[str] = None,
-        image_aspect_ratio: Optional[float] = None,
+        image_aspect_ratio: Optional[str] = None,
         use_cache: bool = True,
         tie_weights: bool = True,
         force_full_gpu: bool = True,
         **kwargs,
     ) -> None:
         super().__init__()
+        self._check_llava_imports()
         assert kwargs == {}, f"Unexpected kwargs: {kwargs}"
 
         accelerator_kwargs = InitProcessGroupKwargs(timeout=timedelta(weeks=52))
@@ -70,16 +86,18 @@ class VIRAL(lmms):
         if accelerator.num_processes > 1:
             self._device = torch.device(f"cuda:{accelerator.local_process_index}")
             self.device_map = f"cuda:{accelerator.local_process_index}"
-        elif accelerator.num_processes == 1 and device_map == "auto":
-            self._device = torch.device(device)
-            # If requested, force a single-device map to avoid CPU shards
-            if force_full_gpu and str(self._device).startswith("cuda"):
-                self.device_map = {"": str(self._device)}
+        elif accelerator.num_processes == 1:
+            # Respect explicit device_map if provided
+            if device_map == "auto":
+                self._device = torch.device(device)
+                # If requested, force a single-device map to avoid CPU shards
+                if force_full_gpu and str(self._device).startswith("cuda"):
+                    self.device_map = {"": str(self._device)}
+                else:
+                    self.device_map = device_map
             else:
+                self._device = torch.device(device)
                 self.device_map = device_map
-        else:
-            self._device = torch.device(f"cuda:{accelerator.local_process_index}")
-            self.device_map = f"cuda:{accelerator.local_process_index}"
 
         # Determine model_name; if it's not clearly a LLaVA model but the checkpoint looks multimodal,
         # force a name that contains "llava" so the builder loads the correct subclass (matches training code).
@@ -159,10 +177,14 @@ class VIRAL(lmms):
                 eval_logger.warning(f"VIRAL: Could not automatically load image processor: {e}")
                 self._image_processor = None
 
-        # optional user-specified image aspect ratio
+        # optional user-specified image aspect ratio (should be string: e.g., "pad", "square", "resize")
         if image_aspect_ratio is not None and self._config is not None:
             try:
-                self._config.image_aspect_ratio = image_aspect_ratio
+                valid_aspects = {"pad", "square", "resize"}
+                if isinstance(image_aspect_ratio, str) and (image_aspect_ratio in valid_aspects):
+                    self._config.image_aspect_ratio = image_aspect_ratio
+                else:
+                    eval_logger.warning(f"VIRAL: image_aspect_ratio '{image_aspect_ratio}' is not a recognized string value; expected one of {valid_aspects}.")
             except Exception:
                 pass
         # Introspect whether this model's generate() accepts images (as in Llava* classes)
@@ -243,10 +265,11 @@ class VIRAL(lmms):
             self._world_size = 1
 
     def pad_sequence(self, input_ids, batch_first, padding_value):
-        if self.tokenizer.padding_side == "left":
+        padding_side = getattr(self.tokenizer, 'padding_side', 'right')
+        if padding_side == "left":
             input_ids = [torch.flip(_input_ids, [0]) for _input_ids in input_ids]
         input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=batch_first, padding_value=padding_value)
-        if self.tokenizer.padding_side == "left":
+        if padding_side == "left":
             input_ids = torch.flip(input_ids, [1])
         return input_ids
 
@@ -718,6 +741,8 @@ class VIRAL(lmms):
                 if unk_id is None:
                     unk_id = getattr(self.tokenizer, 'eos_token_id', 0)
                 if isinstance(input_ids, torch.Tensor):
+                    # Clone before mutating
+                    input_ids = input_ids.clone()
                     ids_flat = input_ids.view(-1)
                     # Replace invalid negatives and out-of-range ids
                     if vocab_size is not None:
@@ -835,13 +860,14 @@ class VIRAL(lmms):
             min_new_tokens = gen_kwargs.pop("min_new_tokens", None)
 
             pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
-            # Provide a basic attention mask to avoid any model-specific quirks
+            # Provide an attention mask only for pure text generation; for multimodal paths, let the model compute it
             attention_mask = None
-            try:
-                if isinstance(input_ids, torch.Tensor):
-                    attention_mask = torch.ones((input_ids.shape[0], input_ids.shape[1]), dtype=torch.long, device=input_ids.device)
-            except Exception:
-                attention_mask = None
+            if images_arg is None:
+                try:
+                    if isinstance(input_ids, torch.Tensor):
+                        attention_mask = torch.ones((input_ids.shape[0], input_ids.shape[1]), dtype=torch.long, device=input_ids.device)
+                except Exception:
+                    attention_mask = None
 
             # Compose stopping criteria from strings
             input_len = int(input_ids.shape[1]) if hasattr(input_ids, 'shape') else int(len(input_ids[0]))
@@ -920,9 +946,12 @@ class VIRAL(lmms):
                         # Optional fields below are added conditionally
                         use_cache=self.use_cache,
                         pad_token_id=pad_token_id,
-                        attention_mask=attention_mask,
                         stopping_criteria=stopping_criteria,
+                        return_dict_in_generate=True,
                     )
+                    # Only include attention_mask for text-only runs
+                    if attention_mask is not None and images_arg is None:
+                        generate_common['attention_mask'] = attention_mask
                     # Add optional knobs only if explicitly provided
                     if min_new_tokens is not None:
                         try:
@@ -957,6 +986,8 @@ class VIRAL(lmms):
                     if getattr(self, "_accepts_image_generate", False) and images_arg is not None:
                         # Preferred: let the model handle images directly via its custom generate()
                         try:
+                            if debug_this:
+                                eval_logger.debug("VIRAL DEBUG: generation branch = multimodal-direct-generate")
                             prefix_len = input_len
                             # Some LLaVA versions use `inputs` instead of `input_ids` in generate
                             try:
@@ -991,6 +1022,8 @@ class VIRAL(lmms):
                         except Exception as gen_e:
                             # Fallback: precompute inputs_embeds if direct images path fails
                             try:
+                                if debug_this:
+                                    eval_logger.debug("VIRAL DEBUG: generation branch = multimodal-inputs_embeds-fallback")
                                 out = self.model.prepare_inputs_labels_for_multimodal(
                                     input_ids,
                                     position_ids=None,
@@ -1038,6 +1071,7 @@ class VIRAL(lmms):
                                         f"VIRAL.generate_until: multimodal generate failed; retrying text-only. Error: {gen_e} | prep_fallback_error: {prep_e}"
                                     )
                                 if debug_this:
+                                    eval_logger.debug("VIRAL DEBUG: generation branch = text-only-fallback-after-mm-failure")
                                     try:
                                         eval_logger.debug(f"VIRAL DEBUG: generate_common on fallback keys={sorted(list(generate_common.keys()))}")
                                     except Exception:
@@ -1068,6 +1102,9 @@ class VIRAL(lmms):
                             use_inputs_kw = 'inputs' in gen_sig.parameters
                         except Exception:
                             use_inputs_kw = True
+                        if debug_this:
+                            branch = 'text-only-inputs' if use_inputs_kw else 'text-only-input_ids'
+                            eval_logger.debug(f"VIRAL DEBUG: generation branch = {branch}")
                         if use_inputs_kw:
                             prefix_len = input_len
                             output_ids = self.model.generate(inputs=input_ids, **generate_common)
@@ -1076,10 +1113,8 @@ class VIRAL(lmms):
                             output_ids = self.model.generate(input_ids=input_ids, **generate_common)
 
                 # HF may return a GenerateOutput struct; extract sequences if present
-                if hasattr(output_ids, "sequences"):
-                    output_tensor = output_ids.sequences
-                else:
-                    output_tensor = output_ids
+                # Prefer sequences when return_dict_in_generate=True; otherwise assume tensor
+                output_tensor = getattr(output_ids, 'sequences', output_ids)
                 # Slice to only new tokens using the known prefix_len for the chosen generate path
                 try:
                     if hasattr(output_tensor, 'shape') and output_tensor.shape[1] > prefix_len:
@@ -1089,18 +1124,28 @@ class VIRAL(lmms):
                 except Exception:
                     # Defensive fallback
                     new_tokens = output_tensor[0]
+                if debug_this:
+                    try:
+                        preview_tokens = new_tokens.tolist() if hasattr(new_tokens, 'tolist') else list(new_tokens)
+                        eval_logger.debug(f"VIRAL DEBUG: new_tokens length={len(preview_tokens)} head={preview_tokens[:16]}")
+                    except Exception:
+                        pass
                 text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
 
                 # Final defensive truncation by stopping strings
                 if until:
                     cut_idx = len(text)
+                    stop_matched = None
                     for s in until:
                         if not s:
                             continue
                         pos = text.find(s)
                         if pos != -1:
                             cut_idx = min(cut_idx, pos)
+                            stop_matched = s
                     text = text[:cut_idx]
+                    if debug_this:
+                        eval_logger.debug(f"VIRAL DEBUG: applied post-decode stop '{stop_matched}' -> cut to {len(text)} chars")
 
                 # Optional: log generation output for debugging/inspection (logger only, no file writes)
                 try:
