@@ -548,7 +548,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 img_token_where = torch.zeros((bsz, seqlen), dtype=torch.bool, device=inputs_embeds.device)
             else:
                 img_token_where = None
-        if self.training and inputs_embeds is not None:
+        # Never pass both input_ids and inputs_embeds downstream; inputs_embeds takes precedence
+        if inputs_embeds is not None:
             input_ids = None
         
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -813,6 +814,9 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
 
         # Primary path: rely on inputs_embeds (already computed) and let HF generate drive decoding
         try:
+            # Ensure no conflicting identifiers are forwarded alongside inputs_embeds
+            kwargs.pop("input_ids", None)
+            kwargs.pop("inputs", None)
             return super().generate(
                 position_ids=position_ids,
                 attention_mask=attention_mask,
