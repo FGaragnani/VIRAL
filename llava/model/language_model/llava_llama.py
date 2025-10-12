@@ -773,6 +773,9 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             # Ensure no conflicting identifiers are forwarded
             kwargs.pop("input_ids", None)
             kwargs.pop("inputs", None)
+            # attention_mask/position_ids are already extracted above; avoid duplicates in kwargs
+            kwargs.pop("attention_mask", None)
+            kwargs.pop("position_ids", None)
             return super().generate(
                 position_ids=position_ids,
                 attention_mask=attention_mask,
@@ -827,6 +830,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             # Ensure no conflicting identifiers are forwarded alongside inputs_embeds
             kwargs.pop("input_ids", None)
             kwargs.pop("inputs", None)
+            kwargs.pop("attention_mask", None)
+            kwargs.pop("position_ids", None)
             return super().generate(
                 position_ids=position_ids,
                 attention_mask=attention_mask,
@@ -839,6 +844,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 # Remove image-related kwargs if any leaked through
                 kwargs.pop('images', None)
                 kwargs.pop('image_sizes', None)
+                kwargs.pop('inputs_embeds', None)
             except Exception:
                 pass
             try:

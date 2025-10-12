@@ -867,6 +867,20 @@ class VIRAL(lmms):
                                 inputs_embeds,
                                 _labels,
                             ) = out
+                            if debug_this:
+                                try:
+                                    def _shape(x):
+                                        if x is None:
+                                            return None
+                                        if isinstance(x, torch.Tensor):
+                                            return f"{tuple(x.shape)} {str(x.dtype)} {str(x.device)}"
+                                        return type(x).__name__
+                                    eval_logger.debug(
+                                        f"VIRAL DEBUG: multimodal prep => input_ids={_shape(new_input_ids)}, pos_ids={_shape(new_position_ids)}, "
+                                        f"attn_mask={_shape(new_attention_mask)}, inputs_embeds={_shape(inputs_embeds)}"
+                                    )
+                                except Exception:
+                                    pass
                             if inputs_embeds is None:
                                 # Fallback: neutralize image tokens and use token embeddings
                                 ids_for_embed = (new_input_ids if new_input_ids is not None else input_ids)
@@ -880,16 +894,25 @@ class VIRAL(lmms):
                                 except Exception:
                                     pass
                                 inputs_embeds = self.model.get_model().embed_tokens(ids_for_embed)
-                            # Call generate with precomputed embeddings
+                            # Log outgoing kwargs to model.generate
+                            if debug_this:
+                                try:
+                                    dbg_keys = sorted([k for k in generate_common.keys() if k not in ("images", "image_sizes")])
+                                    eval_logger.debug(f"VIRAL DEBUG: calling model.generate with keys={dbg_keys} and using inputs_embeds only")
+                                except Exception:
+                                    pass
                             output_ids = self.model.generate(
                                 inputs_embeds=inputs_embeds,
-                                position_ids=new_position_ids,
-                                attention_mask=new_attention_mask,
                                 **generate_common,
                             )
                         except Exception as gen_e:
                             # Fallback: retry generation without images (text-only) to avoid total failure
                             eval_logger.warning(f"VIRAL.generate_until: multimodal prep/generate failed; retrying text-only. Error: {gen_e}")
+                            if debug_this:
+                                try:
+                                    eval_logger.debug(f"VIRAL DEBUG: generate_common on fallback keys={sorted(list(generate_common.keys()))}")
+                                except Exception:
+                                    pass
                             try:
                                 unk_id = getattr(self.tokenizer, 'unk_token_id', None)
                                 if unk_id is None:
@@ -904,6 +927,7 @@ class VIRAL(lmms):
                                         )
                             except Exception:
                                 pass
+                            # Avoid passing attention_mask/position_ids at all for fallback; let model infer
                             output_ids = self.model.generate(inputs=input_ids, **generate_common)
                     else:
                         if images_arg is not None and not getattr(self, "_accepts_image_generate", False):
