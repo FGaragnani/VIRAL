@@ -867,6 +867,21 @@ class VIRAL(lmms):
                         except Exception as gen_e:
                             # Fallback: retry generation without images (text-only) to avoid total failure
                             eval_logger.warning(f"VIRAL.generate_until: multimodal generate failed; retrying text-only. Error: {gen_e}")
+                            # Replace IMAGE_TOKEN_INDEX to avoid embedding -200 during text-only retry
+                            try:
+                                unk_id = getattr(self.tokenizer, 'unk_token_id', None)
+                                if unk_id is None:
+                                    unk_id = getattr(self.tokenizer, 'eos_token_id', 0)
+                                if isinstance(input_ids, torch.Tensor):
+                                    mask_img = (input_ids == IMAGE_TOKEN_INDEX)
+                                    count_img = int(mask_img.sum().item())
+                                    if count_img > 0:
+                                        input_ids = input_ids.masked_fill(mask_img, int(unk_id))
+                                        eval_logger.warning(
+                                            f"VIRAL: neutralized {count_img} IMAGE_TOKEN_INDEX for text-only retry (unk_id={unk_id})."
+                                        )
+                            except Exception:
+                                pass
                             try:
                                 # Re-evaluate signature in case different path is used without images
                                 try:
