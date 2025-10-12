@@ -735,9 +735,27 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 inputs, position_ids, attention_mask, _, inputs_embeds, _ = out
                 if inputs_embeds is None:
                     # Fallback to text-only embeds if multimodal path produced None embeds
+                    try:
+                        from llava.constants import IMAGE_TOKEN_INDEX
+                        eos_id = int(getattr(self.config, 'eos_token_id', 0))
+                        if inputs is not None:
+                            img_mask = (inputs == IMAGE_TOKEN_INDEX)
+                            if img_mask.any():
+                                inputs = inputs.masked_fill(img_mask, eos_id)
+                    except Exception:
+                        pass
                     inputs_embeds = self.get_model().embed_tokens(inputs)
             except Exception:
                 # Last-resort fallback: ignore images and proceed with text-only
+                try:
+                    from llava.constants import IMAGE_TOKEN_INDEX
+                    eos_id = int(getattr(self.config, 'eos_token_id', 0))
+                    if inputs is not None:
+                        img_mask = (inputs == IMAGE_TOKEN_INDEX)
+                        if img_mask.any():
+                            inputs = inputs.masked_fill(img_mask, eos_id)
+                except Exception:
+                    pass
                 inputs_embeds = self.get_model().embed_tokens(inputs)
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)

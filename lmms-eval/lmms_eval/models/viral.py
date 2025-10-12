@@ -617,7 +617,7 @@ class VIRAL(lmms):
                     ids_raw = self.tokenizer(prompt, return_tensors="pt").input_ids
                 except Exception:
                     ids_raw = torch.tensor([[self.eot_token_id]], dtype=torch.long)
-            # Normalize to a single 2D tensor on device
+            # Normalize to a single 2D tensor (keep on CPU for now)
             if isinstance(ids_raw, list):
                 try:
                     parts = [t if isinstance(t, torch.Tensor) else torch.tensor(t) for t in ids_raw]
@@ -630,26 +630,90 @@ class VIRAL(lmms):
                 input_ids = ids_raw
             if hasattr(input_ids, "dim") and input_ids.dim() == 1:
                 input_ids = input_ids.unsqueeze(0)
+            # Prepare image tensor if any (needed before deciding on IMAGE_TOKEN_INDEX handling)
+            images_arg = None
+            image_sizes = None
+            if visuals is not None:
+                if not self._ensure_image_processor():
+                    eval_logger.warning("VIRAL.generate_until: no image_processor available; generating without images.")
+                else:
+                    try:
+                        # Build a consistent visuals list for sizes
+                        visuals_list = visuals if isinstance(visuals, list) else [visuals]
+                        image_sizes = [v.size for v in visuals_list if hasattr(v, 'size')]
+                        processed = process_images(visuals_list, self._image_processor, self._config)
+                        # Normalize to list of tensors on the correct device/dtype
+                        vis_device, vis_dtype = self._vision_device_dtype()
+                        if isinstance(processed, list):
+                            images_arg = []
+                            for _img in processed:
+                                if _img is None:
+                                    continue
+                                images_arg.append(_img.to(dtype=vis_dtype, device=vis_device))
+                            if len(images_arg) == 0:
+                                images_arg = None
+                        else:
+                            images_arg = processed.to(dtype=vis_dtype, device=vis_device)
+                    except Exception as e:
+                        eval_logger.warning(f"VIRAL.generate_until: image processing failed; continuing without images. Error: {e}")
+                        images_arg = None
+                        image_sizes = None
+
             # Sanitize token IDs to avoid out-of-range indices in embeddings
             try:
                 vocab_size = getattr(self.tokenizer, 'vocab_size', None)
                 unk_id = getattr(self.tokenizer, 'unk_token_id', None)
                 if unk_id is None:
                     unk_id = getattr(self.tokenizer, 'eos_token_id', 0)
-                if isinstance(input_ids, torch.Tensor) and vocab_size is not None:
+                if isinstance(input_ids, torch.Tensor):
                     ids_flat = input_ids.view(-1)
-                    bad_neg_mask = (ids_flat < 0) & (ids_flat != IMAGE_TOKEN_INDEX)
-                    oor_mask = ids_flat >= vocab_size
-                    fix_count = int(bad_neg_mask.sum().item() + oor_mask.sum().item())
-                    if fix_count > 0:
-                        ids_flat[bad_neg_mask] = int(unk_id)
-                        ids_flat[oor_mask] = int(unk_id)
-                        input_ids = ids_flat.view_as(input_ids)
-                        eval_logger.warning(
-                            f"VIRAL: sanitized {fix_count} invalid token ids (replaced with unk_id={unk_id})."
-                        )
+                    # Replace invalid negatives and out-of-range ids
+                    if vocab_size is not None:
+                        bad_neg_mask = (ids_flat < 0) & (ids_flat != IMAGE_TOKEN_INDEX)
+                        oor_mask = ids_flat >= vocab_size
+                        fix_count = int(bad_neg_mask.sum().item() + oor_mask.sum().item())
+                        if fix_count > 0:
+                            ids_flat[bad_neg_mask] = int(unk_id)
+                            ids_flat[oor_mask] = int(unk_id)
+                            input_ids = ids_flat.view_as(input_ids)
+                            eval_logger.warning(
+                                f"VIRAL: sanitized {fix_count} invalid token ids (replaced with unk_id={unk_id})."
+                            )
+                    # If image tokens exist but images won't be used, neutralize IMAGE_TOKEN_INDEX
+                    accepts_img = getattr(self, "_accepts_image_generate", False)
+                    will_use_images = accepts_img and (images_arg is not None)
+                    if not will_use_images:
+                        img_mask = ids_flat == IMAGE_TOKEN_INDEX
+                        img_count = int(img_mask.sum().item())
+                        if img_count > 0:
+                            ids_flat[img_mask] = int(unk_id)
+                            input_ids = ids_flat.view_as(input_ids)
+                            eval_logger.warning(
+                                f"VIRAL: replaced {img_count} IMAGE_TOKEN_INDEX with unk_id={unk_id} because images are not used in generate()."
+                            )
             except Exception:
                 pass
+
+            if debug_this:
+                try:
+                    num_img_tokens = int((input_ids == IMAGE_TOKEN_INDEX).sum().item()) if isinstance(input_ids, torch.Tensor) else 0
+                    ids_flat = input_ids.view(-1)
+                    non_img_mask = ids_flat != IMAGE_TOKEN_INDEX
+                    safe_ids = ids_flat[non_img_mask]
+                    vocab_size = getattr(self.tokenizer, 'vocab_size', None)
+                    neg_count = int((safe_ids < 0).sum().item()) if safe_ids.numel() > 0 else 0
+                    oor_count = None
+                    min_id = int(safe_ids.min().item()) if safe_ids.numel() > 0 else None
+                    max_id = int(safe_ids.max().item()) if safe_ids.numel() > 0 else None
+                    if vocab_size is not None and safe_ids.numel() > 0:
+                        oor_count = int((safe_ids >= vocab_size).sum().item())
+                    eval_logger.debug(
+                        f"VIRAL DEBUG: tokenized input (pre-device) shape={tuple(input_ids.shape)} | IMAGE_TOKEN_INDEX occurrences={num_img_tokens} | "
+                        f"min_id={min_id} max_id={max_id} vocab_size={vocab_size} neg_non_img={neg_count} out_of_range={oor_count}"
+                    )
+                except Exception:
+                    pass
+
             if hasattr(input_ids, "to"):
                 input_ids = input_ids.to(self.device)
             # Ensure 2D tensor
@@ -683,34 +747,7 @@ class VIRAL(lmms):
                 except Exception:
                     pass
 
-            # Prepare image tensor if any
-            images_arg = None
-            image_sizes = None
-            if visuals is not None:
-                if not self._ensure_image_processor():
-                    eval_logger.warning("VIRAL.generate_until: no image_processor available; generating without images.")
-                else:
-                    try:
-                        # Build a consistent visuals list for sizes
-                        visuals_list = visuals if isinstance(visuals, list) else [visuals]
-                        image_sizes = [v.size for v in visuals_list if hasattr(v, 'size')]
-                        processed = process_images(visuals_list, self._image_processor, self._config)
-                        # Normalize to list of tensors on the correct device/dtype
-                        vis_device, vis_dtype = self._vision_device_dtype()
-                        if isinstance(processed, list):
-                            images_arg = []
-                            for _img in processed:
-                                if _img is None:
-                                    continue
-                                images_arg.append(_img.to(dtype=vis_dtype, device=vis_device))
-                            if len(images_arg) == 0:
-                                images_arg = None
-                        else:
-                            images_arg = processed.to(dtype=vis_dtype, device=vis_device)
-                    except Exception as e:
-                        eval_logger.warning(f"VIRAL.generate_until: image processing failed; continuing without images. Error: {e}")
-                        images_arg = None
-                        image_sizes = None
+            # (images_arg already prepared above)
 
             if debug_this:
                 try:
