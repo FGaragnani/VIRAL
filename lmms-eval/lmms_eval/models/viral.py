@@ -630,6 +630,26 @@ class VIRAL(lmms):
                 input_ids = ids_raw
             if hasattr(input_ids, "dim") and input_ids.dim() == 1:
                 input_ids = input_ids.unsqueeze(0)
+            # Sanitize token IDs to avoid out-of-range indices in embeddings
+            try:
+                vocab_size = getattr(self.tokenizer, 'vocab_size', None)
+                unk_id = getattr(self.tokenizer, 'unk_token_id', None)
+                if unk_id is None:
+                    unk_id = getattr(self.tokenizer, 'eos_token_id', 0)
+                if isinstance(input_ids, torch.Tensor) and vocab_size is not None:
+                    ids_flat = input_ids.view(-1)
+                    bad_neg_mask = (ids_flat < 0) & (ids_flat != IMAGE_TOKEN_INDEX)
+                    oor_mask = ids_flat >= vocab_size
+                    fix_count = int(bad_neg_mask.sum().item() + oor_mask.sum().item())
+                    if fix_count > 0:
+                        ids_flat[bad_neg_mask] = int(unk_id)
+                        ids_flat[oor_mask] = int(unk_id)
+                        input_ids = ids_flat.view_as(input_ids)
+                        eval_logger.warning(
+                            f"VIRAL: sanitized {fix_count} invalid token ids (replaced with unk_id={unk_id})."
+                        )
+            except Exception:
+                pass
             if hasattr(input_ids, "to"):
                 input_ids = input_ids.to(self.device)
             # Ensure 2D tensor
