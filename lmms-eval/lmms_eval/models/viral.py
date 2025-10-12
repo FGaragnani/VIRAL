@@ -4,7 +4,7 @@ import json
 import inspect
 import warnings
 from datetime import timedelta
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Any, Dict, cast
 
 import numpy as np
 import soundfile as sf
@@ -114,7 +114,7 @@ class VIRAL(lmms):
 
 
         self._tokenizer, self._model, self._image_processor, self._max_length = load_pretrained_model(
-            name_or_path, base, model_name, device_map=self.device_map, **loader_kwargs
+            name_or_path, base, model_name, device_map=self.device_map, **loader_kwargs  # type: ignore[arg-type]
         )
 
         self._config = getattr(self._model, "config", None)
@@ -410,7 +410,10 @@ class VIRAL(lmms):
                 vt0 = vt
             if vt0 is not None:
                 try:
-                    p = next(vt0.parameters())
+                    if not hasattr(vt0, 'parameters'):
+                        raise AttributeError('vision tower has no parameters attribute')
+                    vt0_any = cast(Any, vt0)
+                    p = next(vt0_any.parameters())
                     return p.device, p.dtype
                 except Exception:
                     # try attribute-based
@@ -807,9 +810,12 @@ class VIRAL(lmms):
             # Stopping sequences
             until = gen_kwargs.pop("until", None)
             if until is None:
-                until = [self.tok_decode(self.eot_token_id)]
+                until = []
             elif isinstance(until, str):
                 until = [until]
+            # Drop empty/whitespace stop strings to avoid truncating output to empty
+            if isinstance(until, list):
+                until = [s for s in until if isinstance(s, str) and s.strip() != ""]
 
             # Defaults
             temperature = gen_kwargs.pop("temperature", 0)
@@ -828,6 +834,10 @@ class VIRAL(lmms):
 
             # Run generation
             try:
+                # By default, assume the returned sequences include the prompt tokens
+                # (this is true when passing input_ids/inputs). When using inputs_embeds,
+                # HF returns only the newly generated tokens, so we must NOT slice them off.
+                prefix_len = input_len
                 try:
                     eval_logger.debug(
                         f"VIRAL.generate_until: input_ids shape={tuple(input_ids.shape) if hasattr(input_ids,'shape') else 'N/A'}, "
@@ -852,10 +862,10 @@ class VIRAL(lmms):
                     try:
                         img_dtype = None
                         if images_arg is not None:
-                            if isinstance(images_arg, list) and len(images_arg) > 0 and hasattr(images_arg[0], 'dtype'):
-                                img_dtype = images_arg[0].dtype
-                            elif hasattr(images_arg, 'dtype'):
-                                img_dtype = images_arg.dtype
+                            if isinstance(images_arg, list) and len(images_arg) > 0:
+                                img_dtype = getattr(images_arg[0], 'dtype', None)
+                            else:
+                                img_dtype = getattr(images_arg, 'dtype', None)
                     except Exception:
                         img_dtype = None
                     try:
@@ -870,7 +880,7 @@ class VIRAL(lmms):
                     pass
                 with torch.inference_mode():
                     do_sample = True if temperature and float(temperature) > 0 else False
-                    generate_common = dict(
+                    generate_common: Dict[str, Any] = dict(
                         do_sample=do_sample,
                         num_beams=num_beams,
                         max_new_tokens=max_new_tokens,
@@ -955,6 +965,9 @@ class VIRAL(lmms):
                                     pass
                             # Build a clean kwargs without attention keys to avoid duplication
                             gen_clean = {k: v for k, v in generate_common.items() if k not in ("attention_mask", "position_ids")}
+                            # When using inputs_embeds, returned sequences contain ONLY newly generated tokens
+                            # (no prompt). Ensure we don't slice them off later.
+                            prefix_len = 0
                             output_ids = self.model.generate(
                                 inputs_embeds=inputs_embeds,
                                 attention_mask=attn_for_embeds,
@@ -991,6 +1004,7 @@ class VIRAL(lmms):
                             except Exception:
                                 pass
                             # Avoid passing attention_mask/position_ids at all for fallback; let model infer
+                            prefix_len = input_len  # reset: now using input_ids path again
                             output_ids = self.model.generate(inputs=input_ids, **generate_common)
                     else:
                         if images_arg is not None and not getattr(self, "_accepts_image_generate", False):
@@ -1002,8 +1016,10 @@ class VIRAL(lmms):
                         except Exception:
                             use_inputs_kw = True
                         if use_inputs_kw:
+                            prefix_len = input_len
                             output_ids = self.model.generate(inputs=input_ids, **generate_common)
                         else:
+                            prefix_len = input_len
                             output_ids = self.model.generate(input_ids=input_ids, **generate_common)
 
                 # HF may return a GenerateOutput struct; extract sequences if present
@@ -1011,8 +1027,15 @@ class VIRAL(lmms):
                     output_tensor = output_ids.sequences
                 else:
                     output_tensor = output_ids
-                # Slice to only new tokens and decode
-                new_tokens = output_tensor[0, input_len:]
+                # Slice to only new tokens and decode. If we used inputs_embeds, prefix_len==0
+                try:
+                    if prefix_len > 0 and output_tensor.shape[1] >= prefix_len:
+                        new_tokens = output_tensor[0, prefix_len:]
+                    else:
+                        new_tokens = output_tensor[0]
+                except Exception:
+                    # Defensive fallback
+                    new_tokens = output_tensor[0]
                 text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
 
                 # Final defensive truncation by stopping strings
