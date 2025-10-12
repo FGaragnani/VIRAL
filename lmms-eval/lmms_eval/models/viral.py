@@ -645,8 +645,20 @@ class VIRAL(lmms):
                 try:
                     # Count image tokens in tokenized input
                     num_img_tokens = int((input_ids == IMAGE_TOKEN_INDEX).sum().item()) if isinstance(input_ids, torch.Tensor) else 0
+                    # Token ID range validation (excluding IMAGE_TOKEN_INDEX)
+                    ids_flat = input_ids.view(-1)
+                    non_img_mask = ids_flat != IMAGE_TOKEN_INDEX
+                    safe_ids = ids_flat[non_img_mask]
+                    vocab_size = getattr(self.tokenizer, 'vocab_size', None)
+                    neg_count = int((safe_ids < 0).sum().item()) if safe_ids.numel() > 0 else 0
+                    oor_count = None
+                    min_id = int(safe_ids.min().item()) if safe_ids.numel() > 0 else None
+                    max_id = int(safe_ids.max().item()) if safe_ids.numel() > 0 else None
+                    if vocab_size is not None and safe_ids.numel() > 0:
+                        oor_count = int((safe_ids >= vocab_size).sum().item())
                     eval_logger.debug(
-                        f"VIRAL DEBUG: tokenized input shape={tuple(input_ids.shape)} | IMAGE_TOKEN_INDEX occurrences={num_img_tokens}"
+                        f"VIRAL DEBUG: tokenized input shape={tuple(input_ids.shape)} | IMAGE_TOKEN_INDEX occurrences={num_img_tokens} | "
+                        f"min_id={min_id} max_id={max_id} vocab_size={vocab_size} neg_non_img={neg_count} out_of_range={oor_count}"
                     )
                 except Exception:
                     pass
@@ -730,9 +742,12 @@ class VIRAL(lmms):
                     # Additional dtype debug for multimodal path
                     try:
                         vt = self.model.get_vision_tower() if hasattr(self.model, 'get_vision_tower') else None
-                        vt_dtype = (next(vt.parameters()).dtype if vt is not None else None)
+                        vt_param = (next(vt.parameters()) if vt is not None else None)
+                        vt_dtype = (vt_param.dtype if vt_param is not None else None)
+                        vt_device = (vt_param.device if vt_param is not None else None)
                     except Exception:
                         vt_dtype = None
+                        vt_device = None
                     try:
                         proj = self.model.get_model().mm_projector if hasattr(self.model, 'get_model') else None
                         proj_dtype = (next(proj.parameters()).dtype if proj is not None else None)
@@ -747,8 +762,13 @@ class VIRAL(lmms):
                                 img_dtype = images_arg.dtype
                     except Exception:
                         img_dtype = None
+                    try:
+                        model_device = next(self.model.parameters()).device
+                    except Exception:
+                        model_device = None
                     eval_logger.debug(
-                        f"VIRAL.generate_until dtypes: model={getattr(self.model, 'dtype', None)}, vision={vt_dtype}, projector={proj_dtype}, images={img_dtype}"
+                        f"VIRAL.generate_until dtypes: model={getattr(self.model, 'dtype', None)}, vision={vt_dtype}, projector={proj_dtype}, images={img_dtype}; "
+                        f"devices: model={model_device}, vision={vt_device}"
                     )
                 except Exception:
                     pass
