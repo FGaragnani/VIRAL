@@ -398,22 +398,31 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         if inputs_embeds is None:
-            (
-                input_ids,
-                position_ids,
-                attention_mask,
-                past_key_values,
-                inputs_embeds,
-                labels
-            ) = self.prepare_inputs_labels_for_multimodal(
-                input_ids,
-                position_ids,
-                attention_mask,
-                past_key_values,
-                labels,
-                images,
-                image_sizes
-            )
+            try:
+                out = self.prepare_inputs_labels_for_multimodal(
+                    input_ids,
+                    position_ids,
+                    attention_mask,
+                    past_key_values,
+                    labels,
+                    images,
+                    image_sizes
+                )
+                if out is None or not isinstance(out, tuple) or len(out) != 6:
+                    raise RuntimeError("prepare_inputs_labels_for_multimodal returned invalid output")
+                (
+                    input_ids,
+                    position_ids,
+                    attention_mask,
+                    past_key_values,
+                    inputs_embeds,
+                    labels
+                ) = out
+                if inputs_embeds is None:
+                    inputs_embeds = self.get_model().embed_tokens(input_ids)
+            except Exception:
+                # Fallback to text-only embeddings if multimodal prep fails
+                inputs_embeds = self.get_model().embed_tokens(input_ids)
 
         return super().forward(
             input_ids=input_ids,

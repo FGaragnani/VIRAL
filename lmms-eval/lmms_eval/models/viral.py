@@ -382,6 +382,35 @@ class VIRAL(lmms):
             pass
         return self.device, getattr(self.model, 'dtype', torch.float16)
 
+    def _should_debug(self, task: str, split: str, doc_id: int, gen_kwargs: dict) -> bool:
+        """Determine whether to emit deep debug logs for a specific request.
+
+        Priority:
+        - gen_kwargs['debug'] truthy enables for this request
+        - Environment VIRAL_DEBUG enables globally with optional filters:
+          VIRAL_DEBUG_TASK, VIRAL_DEBUG_SPLIT, VIRAL_DEBUG_DOC_ID
+        """
+        try:
+            if isinstance(gen_kwargs, dict) and gen_kwargs.get("debug", False):
+                return True
+        except Exception:
+            pass
+        try:
+            if str(os.getenv("VIRAL_DEBUG", "")).strip() not in ("", "0", "false", "False", "no"):
+                want_task = os.getenv("VIRAL_DEBUG_TASK")
+                want_split = os.getenv("VIRAL_DEBUG_SPLIT")
+                want_doc = os.getenv("VIRAL_DEBUG_DOC_ID")
+                if want_task and str(task) != str(want_task):
+                    return False
+                if want_split and str(split) != str(want_split):
+                    return False
+                if want_doc and str(doc_id) != str(want_doc):
+                    return False
+                return True
+        except Exception:
+            pass
+        return False
+
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
         # Basic implementation for Simple model inputs
         res: List[Tuple[float, bool]] = []
@@ -549,6 +578,26 @@ class VIRAL(lmms):
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
 
+            # Optional deep debug: show prompt and visuals metadata
+            debug_this = self._should_debug(task, split, doc_id, all_gen_kwargs if isinstance(all_gen_kwargs, dict) else {})
+            if debug_this:
+                try:
+                    vis_info = None
+                    if visuals is None:
+                        vis_info = "None"
+                    elif isinstance(visuals, list):
+                        vis_info = [getattr(v, 'size', None) for v in visuals]
+                    else:
+                        vis_info = getattr(visuals, 'size', None)
+                    eval_logger.debug(
+                        f"VIRAL DEBUG: task={task} split={split} doc_id={doc_id}\n"
+                        f"- prompt (first 400 chars) => {prompt[:400]!r}\n"
+                        f"- visuals => {vis_info}\n"
+                        f"- template => {getattr(self, 'conv_template', 'vicuna_v1')}"
+                    )
+                except Exception:
+                    pass
+
             # Tokenize with support for image token placeholders
             ids_raw = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt")
             # Fallback if tokenization returns None/empty tensor
@@ -592,6 +641,16 @@ class VIRAL(lmms):
                 except Exception:
                     input_ids = torch.tensor([[self.eot_token_id]], dtype=torch.long, device=self.device)
 
+            if debug_this:
+                try:
+                    # Count image tokens in tokenized input
+                    num_img_tokens = int((input_ids == IMAGE_TOKEN_INDEX).sum().item()) if isinstance(input_ids, torch.Tensor) else 0
+                    eval_logger.debug(
+                        f"VIRAL DEBUG: tokenized input shape={tuple(input_ids.shape)} | IMAGE_TOKEN_INDEX occurrences={num_img_tokens}"
+                    )
+                except Exception:
+                    pass
+
             # Prepare image tensor if any
             images_arg = None
             image_sizes = None
@@ -620,6 +679,20 @@ class VIRAL(lmms):
                         eval_logger.warning(f"VIRAL.generate_until: image processing failed; continuing without images. Error: {e}")
                         images_arg = None
                         image_sizes = None
+
+            if debug_this:
+                try:
+                    if images_arg is None:
+                        eval_logger.debug("VIRAL DEBUG: images_arg=None (will run text-only or model fallback)")
+                    elif isinstance(images_arg, list):
+                        shapes = [tuple(t.shape) for t in images_arg]
+                        dtypes = [str(t.dtype) for t in images_arg]
+                        devices = [str(t.device) for t in images_arg]
+                        eval_logger.debug(f"VIRAL DEBUG: images_arg=list count={len(images_arg)} shapes={shapes} dtypes={dtypes} devices={devices}")
+                    else:
+                        eval_logger.debug(f"VIRAL DEBUG: images_arg=tensor shape={tuple(images_arg.shape)} dtype={images_arg.dtype} device={images_arg.device}")
+                except Exception:
+                    pass
 
             # Generation parameters
             gen_kwargs = dict(all_gen_kwargs) if isinstance(all_gen_kwargs, dict) else {}
@@ -709,10 +782,28 @@ class VIRAL(lmms):
                         gen_call_common = dict(images=images_arg, **generate_common)
                         if pass_sizes and image_sizes is not None:
                             gen_call_common['image_sizes'] = image_sizes
-                        if use_inputs_kw:
-                            output_ids = self.model.generate(inputs=input_ids, **gen_call_common)
-                        else:
-                            output_ids = self.model.generate(input_ids=input_ids, **gen_call_common)
+                        try:
+                            if use_inputs_kw:
+                                output_ids = self.model.generate(inputs=input_ids, **gen_call_common)
+                            else:
+                                output_ids = self.model.generate(input_ids=input_ids, **gen_call_common)
+                        except Exception as gen_e:
+                            # Fallback: retry generation without images (text-only) to avoid total failure
+                            eval_logger.warning(f"VIRAL.generate_until: multimodal generate failed; retrying text-only. Error: {gen_e}")
+                            try:
+                                # Re-evaluate signature in case different path is used without images
+                                try:
+                                    gen_sig_fb = inspect.signature(self.model.generate)
+                                    use_inputs_kw_fb = 'inputs' in gen_sig_fb.parameters
+                                except Exception:
+                                    use_inputs_kw_fb = True
+                                if use_inputs_kw_fb:
+                                    output_ids = self.model.generate(inputs=input_ids, **generate_common)
+                                else:
+                                    output_ids = self.model.generate(input_ids=input_ids, **generate_common)
+                            except Exception as gen_e2:
+                                # Re-raise the original exception context if fallback also fails
+                                raise gen_e2
                     else:
                         if images_arg is not None and not getattr(self, "_accepts_image_generate", False):
                             eval_logger.warning("VIRAL.generate_until: Model.generate() does not accept 'images'; generating without images.")
