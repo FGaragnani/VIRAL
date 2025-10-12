@@ -58,6 +58,7 @@ class VIRAL(lmms):
         image_aspect_ratio: Optional[float] = None,
         use_cache: bool = True,
         tie_weights: bool = True,
+        force_full_gpu: bool = True,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -71,7 +72,11 @@ class VIRAL(lmms):
             self.device_map = f"cuda:{accelerator.local_process_index}"
         elif accelerator.num_processes == 1 and device_map == "auto":
             self._device = torch.device(device)
-            self.device_map = device_map
+            # If requested, force a single-device map to avoid CPU shards
+            if force_full_gpu and str(self._device).startswith("cuda"):
+                self.device_map = {"": str(self._device)}
+            else:
+                self.device_map = device_map
         else:
             self._device = torch.device(f"cuda:{accelerator.local_process_index}")
             self.device_map = f"cuda:{accelerator.local_process_index}"
@@ -175,6 +180,35 @@ class VIRAL(lmms):
                 self.model.tie_weights()
             except Exception:
                 pass
+
+        # Optionally co-locate the vision tower and projector on the same CUDA device/dtype as the base model
+        try:
+            if force_full_gpu and str(self._device).startswith("cuda"):
+                model_device = next(self.model.parameters()).device
+                model_dtype = getattr(self.model, "dtype", None)
+                # Move vision tower
+                vt = self.model.get_vision_tower() if hasattr(self.model, 'get_vision_tower') else None
+                if vt is not None:
+                    try:
+                        if model_dtype is None:
+                            try:
+                                model_dtype = next(self.model.get_model().parameters()).dtype
+                            except Exception:
+                                model_dtype = torch.float16
+                        vt.to(device=model_device, dtype=model_dtype)
+                        eval_logger.info(f"VIRAL: moved vision tower to {model_device} ({model_dtype})")
+                    except Exception as e:
+                        eval_logger.warning(f"VIRAL: could not move vision tower to {model_device}: {e}")
+                # Move projector
+                try:
+                    mm_proj = self.model.get_model().mm_projector if hasattr(self.model, 'get_model') else None
+                    if mm_proj is not None:
+                        mm_proj.to(device=model_device, dtype=(model_dtype or torch.float16))
+                        eval_logger.info(f"VIRAL: moved mm_projector to {model_device} ({model_dtype})")
+                except Exception as e:
+                    eval_logger.debug(f"VIRAL: projector move skipped/failed: {e}")
+        except Exception:
+            pass
 
         self.batch_size_per_gpu = int(batch_size)
         self.use_cache = use_cache
@@ -369,14 +403,19 @@ class VIRAL(lmms):
         """
         try:
             vt = self.model.get_vision_tower() if hasattr(self.model, 'get_vision_tower') else None
-            if vt is not None:
+            # If multiple towers are returned, pick the first for placement info
+            if isinstance(vt, (list, tuple)) and len(vt) > 0:
+                vt0 = vt[0]
+            else:
+                vt0 = vt
+            if vt0 is not None:
                 try:
-                    p = next(vt.parameters())
+                    p = next(vt0.parameters())
                     return p.device, p.dtype
                 except Exception:
                     # try attribute-based
-                    dev = getattr(vt, 'device', self.device)
-                    dt = getattr(vt, 'dtype', getattr(self.model, 'dtype', torch.float16))
+                    dev = getattr(vt0, 'device', self.device)
+                    dt = getattr(vt0, 'dtype', getattr(self.model, 'dtype', torch.float16))
                     return dev, dt
         except Exception:
             pass
