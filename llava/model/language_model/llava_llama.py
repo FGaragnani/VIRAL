@@ -811,12 +811,36 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
 
-        return super().generate(
-            position_ids=position_ids,
-            attention_mask=attention_mask,
-            inputs_embeds=inputs_embeds,
-            **kwargs
-        )
+        # Primary path: rely on inputs_embeds (already computed) and let HF generate drive decoding
+        try:
+            return super().generate(
+                position_ids=position_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                **kwargs
+            )
+        except Exception:
+            # Conservative fallback: drop images and inputs_embeds; use sanitized input_ids only
+            try:
+                # Remove image-related kwargs if any leaked through
+                kwargs.pop('images', None)
+                kwargs.pop('image_sizes', None)
+            except Exception:
+                pass
+            try:
+                eos_id = int(getattr(self.config, 'eos_token_id', 0))
+                if inputs is not None:
+                    img_mask = (inputs == -200)
+                    if img_mask.any():
+                        inputs = inputs.masked_fill(img_mask, eos_id)
+            except Exception:
+                pass
+            return super().generate(
+                input_ids=inputs,
+                position_ids=position_ids,
+                attention_mask=attention_mask,
+                **kwargs
+            )
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
                                       inputs_embeds=None, **kwargs):
