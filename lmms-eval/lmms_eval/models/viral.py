@@ -212,8 +212,11 @@ class VIRAL(lmms):
 
         self.batch_size_per_gpu = int(batch_size)
         self.use_cache = use_cache
-        # default conversation template name used by other models
-        self.conv_template = "vicuna_v1"
+        # Default to LLaVA template if available (better alignment for multimodal models), otherwise Vicuna
+        try:
+            self.conv_template = "llava_v1" if ("llava_v1" in conv_templates) else "vicuna_v1"
+        except Exception:
+            self.conv_template = "vicuna_v1"
 
         # accelerator/device placement
         if accelerator.num_processes > 1:
@@ -888,6 +891,13 @@ class VIRAL(lmms):
                         pad_token_id=pad_token_id,
                         attention_mask=attention_mask,
                     )
+                    # Add BOS/EOS if available to stabilize decoding
+                    eos_id = getattr(self.tokenizer, 'eos_token_id', None)
+                    bos_id = getattr(self.tokenizer, 'bos_token_id', None)
+                    if eos_id is not None:
+                        generate_common['eos_token_id'] = int(eos_id)
+                    if bos_id is not None:
+                        generate_common['bos_token_id'] = int(bos_id)
                     if do_sample:
                         if temperature is not None:
                             generate_common['temperature'] = float(temperature)
@@ -895,117 +905,90 @@ class VIRAL(lmms):
                             generate_common['top_p'] = float(top_p)
 
                     if getattr(self, "_accepts_image_generate", False) and images_arg is not None:
-                        # Precompute multimodal embeddings to avoid conflicting input_ids/inputs_embeds in generate()
+                        # Preferred: let the model handle images directly via its custom generate()
                         try:
-                            out = self.model.prepare_inputs_labels_for_multimodal(
-                                input_ids,
-                                position_ids=None,
-                                attention_mask=None,
-                                past_key_values=None,
-                                labels=None,
-                                images=images_arg,
-                                image_sizes=image_sizes,
-                            )
-                            if out is None or not isinstance(out, tuple) or len(out) != 6:
-                                raise RuntimeError("prepare_inputs_labels_for_multimodal returned invalid output")
-                            (
-                                new_input_ids,
-                                new_position_ids,
-                                new_attention_mask,
-                                _pkv,
-                                inputs_embeds,
-                                _labels,
-                            ) = out
-                            if debug_this:
+                            prefix_len = input_len
+                            # Some LLaVA versions use `inputs` instead of `input_ids` in generate
+                            try:
+                                gen_sig2 = inspect.signature(self.model.generate)
+                                use_inputs_kw2 = 'inputs' in gen_sig2.parameters
+                            except Exception:
+                                use_inputs_kw2 = True
+                            if use_inputs_kw2:
+                                output_ids = self.model.generate(inputs=input_ids, images=images_arg, image_sizes=image_sizes, **generate_common)
+                            else:
+                                output_ids = self.model.generate(input_ids=input_ids, images=images_arg, image_sizes=image_sizes, **generate_common)
+                        except Exception as gen_e:
+                            # Fallback: precompute inputs_embeds if direct images path fails
+                            try:
+                                out = self.model.prepare_inputs_labels_for_multimodal(
+                                    input_ids,
+                                    position_ids=None,
+                                    attention_mask=None,
+                                    past_key_values=None,
+                                    labels=None,
+                                    images=images_arg,
+                                    image_sizes=image_sizes,
+                                )
+                                if out is None or not isinstance(out, tuple) or len(out) != 6:
+                                    raise RuntimeError("prepare_inputs_labels_for_multimodal returned invalid output")
+                                (
+                                    new_input_ids,
+                                    new_position_ids,
+                                    new_attention_mask,
+                                    _pkv,
+                                    inputs_embeds,
+                                    _labels,
+                                ) = out
+                                # Ensure we have a proper attention mask for inputs_embeds
+                                attn_for_embeds = new_attention_mask
+                                if attn_for_embeds is None and isinstance(inputs_embeds, torch.Tensor):
+                                    attn_for_embeds = torch.ones(
+                                        (inputs_embeds.shape[0], inputs_embeds.shape[1]),
+                                        dtype=torch.long,
+                                        device=inputs_embeds.device,
+                                    )
+                                gen_clean = {k: v for k, v in generate_common.items() if k not in ("attention_mask", "position_ids")}
+                                # When using inputs_embeds, returned sequences contain ONLY newly generated tokens
+                                prefix_len = 0
+                                output_ids = self.model.generate(
+                                    inputs_embeds=inputs_embeds,
+                                    attention_mask=attn_for_embeds,
+                                    position_ids=new_position_ids,
+                                    **gen_clean,
+                                )
+                            except Exception as prep_e:
+                                # Fallback: retry generation without images (text-only) to avoid total failure
                                 try:
-                                    def _shape(x):
-                                        if x is None:
-                                            return None
-                                        if isinstance(x, torch.Tensor):
-                                            return f"{tuple(x.shape)} {str(x.dtype)} {str(x.device)}"
-                                        return type(x).__name__
-                                    eval_logger.debug(
-                                        f"VIRAL DEBUG: multimodal prep => input_ids={_shape(new_input_ids)}, pos_ids={_shape(new_position_ids)}, "
-                                        f"attn_mask={_shape(new_attention_mask)}, inputs_embeds={_shape(inputs_embeds)}"
+                                    eval_logger.exception(
+                                        f"VIRAL.generate_until: multimodal generate failed; retrying text-only. Error: {gen_e} | prep_fallback_error: {prep_e}"
                                     )
                                 except Exception:
-                                    pass
-                            if inputs_embeds is None:
-                                # Fallback: neutralize image tokens and use token embeddings
-                                ids_for_embed = (new_input_ids if new_input_ids is not None else input_ids)
+                                    eval_logger.warning(
+                                        f"VIRAL.generate_until: multimodal generate failed; retrying text-only. Error: {gen_e} | prep_fallback_error: {prep_e}"
+                                    )
+                                if debug_this:
+                                    try:
+                                        eval_logger.debug(f"VIRAL DEBUG: generate_common on fallback keys={sorted(list(generate_common.keys()))}")
+                                    except Exception:
+                                        pass
                                 try:
                                     unk_id = getattr(self.tokenizer, 'unk_token_id', None)
                                     if unk_id is None:
                                         unk_id = getattr(self.tokenizer, 'eos_token_id', 0)
-                                    mask_img = (ids_for_embed == IMAGE_TOKEN_INDEX)
-                                    if mask_img.any():
-                                        ids_for_embed = ids_for_embed.masked_fill(mask_img, int(unk_id))
+                                    if isinstance(input_ids, torch.Tensor):
+                                        mask_img = (input_ids == IMAGE_TOKEN_INDEX)
+                                        count_img = int(mask_img.sum().item())
+                                        if count_img > 0:
+                                            input_ids = input_ids.masked_fill(mask_img, int(unk_id))
+                                            eval_logger.warning(
+                                                f"VIRAL: neutralized {count_img} IMAGE_TOKEN_INDEX for text-only retry (unk_id={unk_id})."
+                                            )
                                 except Exception:
                                     pass
-                                inputs_embeds = self.model.get_model().embed_tokens(ids_for_embed)
-                            # Ensure we have a proper attention mask for inputs_embeds
-                            attn_for_embeds = new_attention_mask
-                            if attn_for_embeds is None and isinstance(inputs_embeds, torch.Tensor):
-                                attn_for_embeds = torch.ones(
-                                    (inputs_embeds.shape[0], inputs_embeds.shape[1]),
-                                    dtype=torch.long,
-                                    device=inputs_embeds.device,
-                                )
-                            # Log outgoing kwargs to model.generate
-                            if debug_this:
-                                try:
-                                    dbg_keys = sorted([k for k in generate_common.keys() if k not in ("images", "image_sizes", "attention_mask", "position_ids")])
-                                    eval_logger.debug(
-                                        f"VIRAL DEBUG: calling model.generate with inputs_embeds shape={tuple(inputs_embeds.shape)}; "
-                                        f"pos_ids={'None' if new_position_ids is None else tuple(new_position_ids.shape)}; "
-                                        f"attn_mask={'None' if attn_for_embeds is None else tuple(attn_for_embeds.shape)}; "
-                                        f"other_keys={dbg_keys}"
-                                    )
-                                except Exception:
-                                    pass
-                            # Build a clean kwargs without attention keys to avoid duplication
-                            gen_clean = {k: v for k, v in generate_common.items() if k not in ("attention_mask", "position_ids")}
-                            # When using inputs_embeds, returned sequences contain ONLY newly generated tokens
-                            # (no prompt). Ensure we don't slice them off later.
-                            prefix_len = 0
-                            output_ids = self.model.generate(
-                                inputs_embeds=inputs_embeds,
-                                attention_mask=attn_for_embeds,
-                                position_ids=new_position_ids,
-                                **gen_clean,
-                            )
-                        except Exception as gen_e:
-                            # Fallback: retry generation without images (text-only) to avoid total failure
-                            try:
-                                eval_logger.exception(
-                                    f"VIRAL.generate_until: multimodal prep/generate failed; retrying text-only. Error: {gen_e}"
-                                )
-                            except Exception:
-                                eval_logger.warning(
-                                    f"VIRAL.generate_until: multimodal prep/generate failed; retrying text-only. Error: {gen_e}"
-                                )
-                            if debug_this:
-                                try:
-                                    eval_logger.debug(f"VIRAL DEBUG: generate_common on fallback keys={sorted(list(generate_common.keys()))}")
-                                except Exception:
-                                    pass
-                            try:
-                                unk_id = getattr(self.tokenizer, 'unk_token_id', None)
-                                if unk_id is None:
-                                    unk_id = getattr(self.tokenizer, 'eos_token_id', 0)
-                                if isinstance(input_ids, torch.Tensor):
-                                    mask_img = (input_ids == IMAGE_TOKEN_INDEX)
-                                    count_img = int(mask_img.sum().item())
-                                    if count_img > 0:
-                                        input_ids = input_ids.masked_fill(mask_img, int(unk_id))
-                                        eval_logger.warning(
-                                            f"VIRAL: neutralized {count_img} IMAGE_TOKEN_INDEX for text-only retry (unk_id={unk_id})."
-                                        )
-                            except Exception:
-                                pass
-                            # Avoid passing attention_mask/position_ids at all for fallback; let model infer
-                            prefix_len = input_len  # reset: now using input_ids path again
-                            output_ids = self.model.generate(inputs=input_ids, **generate_common)
+                                # Avoid passing attention_mask/position_ids at all for fallback; let model infer
+                                prefix_len = input_len  # reset: now using input_ids path again
+                                output_ids = self.model.generate(inputs=input_ids, **generate_common)
                     else:
                         if images_arg is not None and not getattr(self, "_accepts_image_generate", False):
                             eval_logger.warning("VIRAL.generate_until: Model.generate() does not accept 'images'; generating without images.")
@@ -1027,12 +1010,18 @@ class VIRAL(lmms):
                     output_tensor = output_ids.sequences
                 else:
                     output_tensor = output_ids
-                # Slice to only new tokens and decode. If we used inputs_embeds, prefix_len==0
+                # Robustly decide whether sequences include the prompt by comparing prefixes
                 try:
-                    if prefix_len > 0 and output_tensor.shape[1] >= prefix_len:
-                        new_tokens = output_tensor[0, prefix_len:]
+                    out_row = output_tensor[0]
+                    if (
+                        isinstance(input_ids, torch.Tensor)
+                        and hasattr(out_row, 'shape')
+                        and out_row.shape[0] >= input_len
+                        and torch.equal(out_row[:input_len].to(input_ids.device), input_ids[0, :input_len])
+                    ):
+                        new_tokens = out_row[input_len:]
                     else:
-                        new_tokens = output_tensor[0]
+                        new_tokens = out_row
                 except Exception:
                     # Defensive fallback
                     new_tokens = output_tensor[0]
