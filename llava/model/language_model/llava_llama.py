@@ -767,8 +767,18 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     ) -> Union[GenerateOutput, torch.LongTensor]:
         position_ids = kwargs.pop("position_ids", None)
         attention_mask = kwargs.pop("attention_mask", None)
-        if "inputs_embeds" in kwargs:
-            raise NotImplementedError("`inputs_embeds` is not supported")
+        # If caller provides precomputed embeddings, bypass multimodal prep and delegate directly.
+        if "inputs_embeds" in kwargs and kwargs["inputs_embeds"] is not None:
+            inputs_embeds = kwargs.pop("inputs_embeds")
+            # Ensure no conflicting identifiers are forwarded
+            kwargs.pop("input_ids", None)
+            kwargs.pop("inputs", None)
+            return super().generate(
+                position_ids=position_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                **kwargs,
+            )
 
         if images is not None:
             try:

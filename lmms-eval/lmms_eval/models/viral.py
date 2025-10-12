@@ -846,28 +846,50 @@ class VIRAL(lmms):
                             generate_common['top_p'] = float(top_p)
 
                     if getattr(self, "_accepts_image_generate", False) and images_arg is not None:
-                        # Only pass image_sizes when required by config
-                        mm_merge = getattr(self._config, 'mm_patch_merge_type', 'flat')
-                        aspect = getattr(self._config, 'image_aspect_ratio', None)
-                        pass_sizes = (aspect == 'anyres') or (isinstance(mm_merge, str) and mm_merge.startswith('spatial'))
-                        # Determine whether to pass inputs or input_ids based on generate signature
+                        # Precompute multimodal embeddings to avoid conflicting input_ids/inputs_embeds in generate()
                         try:
-                            gen_sig = inspect.signature(self.model.generate)
-                            use_inputs_kw = 'inputs' in gen_sig.parameters
-                        except Exception:
-                            use_inputs_kw = True
-                        gen_call_common = dict(images=images_arg, **generate_common)
-                        if pass_sizes and image_sizes is not None:
-                            gen_call_common['image_sizes'] = image_sizes
-                        try:
-                            if use_inputs_kw:
-                                output_ids = self.model.generate(inputs=input_ids, **gen_call_common)
-                            else:
-                                output_ids = self.model.generate(input_ids=input_ids, **gen_call_common)
+                            out = self.model.prepare_inputs_labels_for_multimodal(
+                                input_ids,
+                                position_ids=None,
+                                attention_mask=None,
+                                past_key_values=None,
+                                labels=None,
+                                images=images_arg,
+                                image_sizes=image_sizes,
+                            )
+                            if out is None or not isinstance(out, tuple) or len(out) != 6:
+                                raise RuntimeError("prepare_inputs_labels_for_multimodal returned invalid output")
+                            (
+                                new_input_ids,
+                                new_position_ids,
+                                new_attention_mask,
+                                _pkv,
+                                inputs_embeds,
+                                _labels,
+                            ) = out
+                            if inputs_embeds is None:
+                                # Fallback: neutralize image tokens and use token embeddings
+                                ids_for_embed = (new_input_ids if new_input_ids is not None else input_ids)
+                                try:
+                                    unk_id = getattr(self.tokenizer, 'unk_token_id', None)
+                                    if unk_id is None:
+                                        unk_id = getattr(self.tokenizer, 'eos_token_id', 0)
+                                    mask_img = (ids_for_embed == IMAGE_TOKEN_INDEX)
+                                    if mask_img.any():
+                                        ids_for_embed = ids_for_embed.masked_fill(mask_img, int(unk_id))
+                                except Exception:
+                                    pass
+                                inputs_embeds = self.model.get_model().embed_tokens(ids_for_embed)
+                            # Call generate with precomputed embeddings
+                            output_ids = self.model.generate(
+                                inputs_embeds=inputs_embeds,
+                                position_ids=new_position_ids,
+                                attention_mask=new_attention_mask,
+                                **generate_common,
+                            )
                         except Exception as gen_e:
                             # Fallback: retry generation without images (text-only) to avoid total failure
-                            eval_logger.warning(f"VIRAL.generate_until: multimodal generate failed; retrying text-only. Error: {gen_e}")
-                            # Replace IMAGE_TOKEN_INDEX to avoid embedding -200 during text-only retry
+                            eval_logger.warning(f"VIRAL.generate_until: multimodal prep/generate failed; retrying text-only. Error: {gen_e}")
                             try:
                                 unk_id = getattr(self.tokenizer, 'unk_token_id', None)
                                 if unk_id is None:
@@ -882,20 +904,7 @@ class VIRAL(lmms):
                                         )
                             except Exception:
                                 pass
-                            try:
-                                # Re-evaluate signature in case different path is used without images
-                                try:
-                                    gen_sig_fb = inspect.signature(self.model.generate)
-                                    use_inputs_kw_fb = 'inputs' in gen_sig_fb.parameters
-                                except Exception:
-                                    use_inputs_kw_fb = True
-                                if use_inputs_kw_fb:
-                                    output_ids = self.model.generate(inputs=input_ids, **generate_common)
-                                else:
-                                    output_ids = self.model.generate(input_ids=input_ids, **generate_common)
-                            except Exception as gen_e2:
-                                # Re-raise the original exception context if fallback also fails
-                                raise gen_e2
+                            output_ids = self.model.generate(inputs=input_ids, **generate_common)
                     else:
                         if images_arg is not None and not getattr(self, "_accepts_image_generate", False):
                             eval_logger.warning("VIRAL.generate_until: Model.generate() does not accept 'images'; generating without images.")
