@@ -622,6 +622,9 @@ class VIRAL(lmms):
             conv.append_message(conv.roles[0], context_str)
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
+            # Ensure a trailing space after the assistant tag to avoid subword-start artifacts (e.g., 's' instead of 'Yes')
+            if not prompt.endswith(" "):
+                prompt = prompt + " "
 
             # Optional deep debug: show prompt and visuals metadata
             debug_this = self._should_debug(task, split, doc_id, all_gen_kwargs if isinstance(all_gen_kwargs, dict) else {})
@@ -685,7 +688,11 @@ class VIRAL(lmms):
                     try:
                         # Build a consistent visuals list for sizes
                         visuals_list = visuals if isinstance(visuals, list) else [visuals]
-                        image_sizes = [v.size for v in visuals_list if hasattr(v, 'size')]
+                        # LLaVA expects (height, width); PIL provides (width, height)
+                        image_sizes = [
+                            (int(getattr(v, 'size')[1]), int(getattr(v, 'size')[0]))
+                            for v in visuals_list if hasattr(v, 'size') and getattr(v, 'size') is not None
+                        ]
                         processed = process_images(visuals_list, self._image_processor, self._config)
                         # Normalize to list of tensors on the correct device/dtype
                         vis_device, vis_dtype = self._vision_device_dtype()
@@ -825,10 +832,16 @@ class VIRAL(lmms):
             top_p = gen_kwargs.pop("top_p", None)
             num_beams = gen_kwargs.pop("num_beams", 1)
             max_new_tokens = gen_kwargs.pop("max_new_tokens", 1024)
+            min_new_tokens = gen_kwargs.pop("min_new_tokens", 2)
 
             pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
-            # Let the model construct attention mask internally for maximum compatibility
+            # Provide a basic attention mask to avoid any model-specific quirks
             attention_mask = None
+            try:
+                if isinstance(input_ids, torch.Tensor):
+                    attention_mask = torch.ones((input_ids.shape[0], input_ids.shape[1]), dtype=torch.long, device=input_ids.device)
+            except Exception:
+                attention_mask = None
 
             # Compose stopping criteria from strings
             input_len = int(input_ids.shape[1]) if hasattr(input_ids, 'shape') else int(len(input_ids[0]))
@@ -887,6 +900,9 @@ class VIRAL(lmms):
                         do_sample=do_sample,
                         num_beams=num_beams,
                         max_new_tokens=max_new_tokens,
+                        min_new_tokens=min_new_tokens,
+                        repetition_penalty=gen_kwargs.pop("repetition_penalty", 1.05),
+                        no_repeat_ngram_size=gen_kwargs.pop("no_repeat_ngram_size", 3),
                         use_cache=self.use_cache,
                         pad_token_id=pad_token_id,
                         attention_mask=attention_mask,
@@ -914,10 +930,30 @@ class VIRAL(lmms):
                                 use_inputs_kw2 = 'inputs' in gen_sig2.parameters
                             except Exception:
                                 use_inputs_kw2 = True
+                            # Ensure images are a list of [3,H,W] tensors and image_sizes align
+                            images_list = None
+                            sizes_list = None
+                            try:
+                                if isinstance(images_arg, list):
+                                    images_list = images_arg
+                                elif isinstance(images_arg, torch.Tensor):
+                                    if images_arg.dim() == 4 and images_arg.shape[0] == 1:
+                                        images_list = [images_arg[0]]
+                                    elif images_arg.dim() == 3:
+                                        images_list = [images_arg]
+                                if isinstance(image_sizes, list):
+                                    sizes_list = image_sizes
+                                elif image_sizes is not None:
+                                    sizes_list = [image_sizes]
+                            except Exception:
+                                images_list = None
+                                sizes_list = None
+                            images_kw = images_list if images_list is not None else images_arg
+                            sizes_kw = sizes_list if sizes_list is not None else image_sizes
                             if use_inputs_kw2:
-                                output_ids = self.model.generate(inputs=input_ids, images=images_arg, image_sizes=image_sizes, **generate_common)
+                                output_ids = self.model.generate(inputs=input_ids, images=images_kw, image_sizes=sizes_kw, **generate_common)
                             else:
-                                output_ids = self.model.generate(input_ids=input_ids, images=images_arg, image_sizes=image_sizes, **generate_common)
+                                output_ids = self.model.generate(input_ids=input_ids, images=images_kw, image_sizes=sizes_kw, **generate_common)
                         except Exception as gen_e:
                             # Fallback: precompute inputs_embeds if direct images path fails
                             try:
@@ -1010,18 +1046,12 @@ class VIRAL(lmms):
                     output_tensor = output_ids.sequences
                 else:
                     output_tensor = output_ids
-                # Robustly decide whether sequences include the prompt by comparing prefixes
+                # Slice to only new tokens using the known prefix_len for the chosen generate path
                 try:
-                    out_row = output_tensor[0]
-                    if (
-                        isinstance(input_ids, torch.Tensor)
-                        and hasattr(out_row, 'shape')
-                        and out_row.shape[0] >= input_len
-                        and torch.equal(out_row[:input_len].to(input_ids.device), input_ids[0, :input_len])
-                    ):
-                        new_tokens = out_row[input_len:]
+                    if hasattr(output_tensor, 'shape') and output_tensor.shape[1] > prefix_len:
+                        new_tokens = output_tensor[0, prefix_len:]
                     else:
-                        new_tokens = out_row
+                        new_tokens = output_tensor[0]
                 except Exception:
                     # Defensive fallback
                     new_tokens = output_tensor[0]
