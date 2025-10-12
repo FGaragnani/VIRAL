@@ -817,7 +817,7 @@ class VIRAL(lmms):
 
             # Generation parameters
             gen_kwargs = dict(all_gen_kwargs) if isinstance(all_gen_kwargs, dict) else {}
-            # Stopping sequences
+            # Stopping sequences (string-based, post-decode fallback)
             until = gen_kwargs.pop("until", None)
             if until is None:
                 until = []
@@ -832,7 +832,7 @@ class VIRAL(lmms):
             top_p = gen_kwargs.pop("top_p", None)
             num_beams = gen_kwargs.pop("num_beams", 1)
             max_new_tokens = gen_kwargs.pop("max_new_tokens", 1024)
-            min_new_tokens = gen_kwargs.pop("min_new_tokens", 2)
+            min_new_tokens = gen_kwargs.pop("min_new_tokens", None)
 
             pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
             # Provide a basic attention mask to avoid any model-specific quirks
@@ -845,8 +845,25 @@ class VIRAL(lmms):
 
             # Compose stopping criteria from strings
             input_len = int(input_ids.shape[1]) if hasattr(input_ids, 'shape') else int(len(input_ids[0]))
-            # For maximum robustness across HF versions, skip custom stopping_criteria
+            # Use LLaVA-style keyword stopping on token-level (prefer sep2 and role markers; avoid single-space sep)
             stopping_criteria = None
+            try:
+                from transformers import StoppingCriteriaList
+                from llava.mm_utils import KeywordsStoppingCriteria
+                keywords: List[str] = []
+                sep2 = getattr(conv, 'sep2', None)
+                sep = getattr(conv, 'sep', None)
+                if isinstance(sep2, str) and sep2.strip() != "":
+                    keywords.append(sep2)
+                # Only use sep if it's not trivial whitespace
+                if isinstance(sep, str) and len(sep.strip()) > 1:
+                    keywords.append(sep)
+                # Add role markers as universal guards
+                keywords.extend(["USER:", "ASSISTANT:"])
+                if len(keywords) > 0:
+                    stopping_criteria = StoppingCriteriaList([KeywordsStoppingCriteria(keywords, self.tokenizer, input_ids)])
+            except Exception:
+                stopping_criteria = None
 
             # Run generation
             try:
@@ -900,13 +917,30 @@ class VIRAL(lmms):
                         do_sample=do_sample,
                         num_beams=num_beams,
                         max_new_tokens=max_new_tokens,
-                        min_new_tokens=min_new_tokens,
-                        repetition_penalty=gen_kwargs.pop("repetition_penalty", 1.05),
-                        no_repeat_ngram_size=gen_kwargs.pop("no_repeat_ngram_size", 3),
+                        # Optional fields below are added conditionally
                         use_cache=self.use_cache,
                         pad_token_id=pad_token_id,
                         attention_mask=attention_mask,
+                        stopping_criteria=stopping_criteria,
                     )
+                    # Add optional knobs only if explicitly provided
+                    if min_new_tokens is not None:
+                        try:
+                            generate_common['min_new_tokens'] = int(min_new_tokens)
+                        except Exception:
+                            pass
+                    rp = gen_kwargs.pop("repetition_penalty", None)
+                    if rp is not None:
+                        try:
+                            generate_common['repetition_penalty'] = float(rp)
+                        except Exception:
+                            pass
+                    nrep = gen_kwargs.pop("no_repeat_ngram_size", None)
+                    if nrep is not None:
+                        try:
+                            generate_common['no_repeat_ngram_size'] = int(nrep)
+                        except Exception:
+                            pass
                     # Add BOS/EOS if available to stabilize decoding
                     eos_id = getattr(self.tokenizer, 'eos_token_id', None)
                     bos_id = getattr(self.tokenizer, 'bos_token_id', None)
