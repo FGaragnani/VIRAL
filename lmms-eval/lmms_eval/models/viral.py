@@ -1026,6 +1026,18 @@ class VIRAL(lmms):
                             cut_idx = min(cut_idx, pos)
                     text = text[:cut_idx]
 
+                # Optional: log generation output for debugging/inspection (logger only, no file writes)
+                try:
+                    want_log = bool(debug_this) or bool((gen_kwargs.get("log_output", False) if isinstance(gen_kwargs, dict) else False))
+                    if want_log:
+                        preview = text if len(text) <= 800 else (text[:800] + "…[truncated]")
+                        eval_logger.info(
+                            f"VIRAL OUTPUT: task={task} split={split} doc_id={doc_id} | len={len(text)}\n" +
+                            f"— preview —\n{preview}"
+                        )
+                except Exception:
+                    pass
+
             except Exception as e:
                 try:
                     eval_logger.exception(
