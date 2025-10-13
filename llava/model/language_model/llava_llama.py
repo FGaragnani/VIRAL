@@ -127,31 +127,7 @@ class ResidualLlamaModel(LlamaModel):
         return_dict: Optional[bool] = None,
         residual: Optional[bool] = False,
         target_layers: Optional[List[int]] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
-        # Fast path: Delegate to upstream LlamaModel implementation when using modern generation flow
-        # (cache_position/SDPA/FA2). This ensures correct position_embeddings handling.
-        try:
-            use_fa2 = getattr(self, "_use_flash_attention_2", False)
-            use_sdpa = getattr(self, "_use_sdpa", False)
-            if cache_position is not None or use_fa2 or use_sdpa:
-                return super().forward(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    inputs_embeds=inputs_embeds,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
-                    return_dict=return_dict,
-                    cache_position=cache_position,
-                    **kwargs,
-                )
-        except Exception:
-            # If delegation fails, fall back to legacy path below
-            pass
         if residual:
             assert target_layers is not None, "target_layers must be specified if residual is True"
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -176,38 +152,12 @@ class ResidualLlamaModel(LlamaModel):
             if use_cache:
                 use_cache = False
 
-        def _infer_past_len(pkv, seq_length):
-            try:
-                if pkv is None:
-                    return 0
-                # New-style cache API
-                fn = getattr(pkv, 'get_usable_length', None)
-                if callable(fn):
-                    return int(fn(seq_length))
-                fn2 = getattr(pkv, 'get_seq_length', None)
-                if callable(fn2):
-                    return int(fn2())
-                # Legacy list/tuple of key/value tensors
-                if isinstance(pkv, (list, tuple)) and len(pkv) > 0 and isinstance(pkv[0], (list, tuple)) and len(pkv[0]) > 0:
-                    k0 = pkv[0][0]
-                    if hasattr(k0, 'shape') and len(k0.shape) >= 4:
-                        return int(k0.shape[-2])
-            except Exception:
-                pass
-            return 0
-
         past_key_values_length = 0
-        use_legacy_cache = False
         if use_cache:
-            if past_key_values is not None and not isinstance(past_key_values, Cache):
-                use_legacy_cache = True
-                # Try to wrap legacy cache, but tolerate environments without the method
-                try:
-                    past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-                    use_legacy_cache = False
-                except Exception:
-                    pass
-            past_key_values_length = _infer_past_len(past_key_values, seq_length)
+            use_legacy_cache = not isinstance(past_key_values, Cache)
+            if use_legacy_cache:
+                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+            past_key_values_length = past_key_values.get_usable_length(seq_length)
 
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
@@ -219,12 +169,10 @@ class ResidualLlamaModel(LlamaModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        use_fa2 = getattr(self, "_use_flash_attention_2", False)
-        use_sdpa = getattr(self, "_use_sdpa", False)
-        if use_fa2:
+        if self._use_flash_attention_2:
             # 2d mask is passed through the layers
             attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
-        elif use_sdpa and not output_attentions:
+        elif self._use_sdpa and not output_attentions:
             # output_attentions=True can not be supported when using SDPA, and we fall back on
             # the manual implementation that requires a 4D causal mask in all cases.
             attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
@@ -289,10 +237,7 @@ class ResidualLlamaModel(LlamaModel):
 
         next_cache = None
         if use_cache:
-            if use_legacy_cache and hasattr(next_decoder_cache, 'to_legacy_cache'):
-                next_cache = next_decoder_cache.to_legacy_cache()
-            else:
-                next_cache = next_decoder_cache
+            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
@@ -416,35 +361,25 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         images: Optional[torch.FloatTensor] = None,
         image_sizes: Optional[List[List[int]]] = None,
         return_dict: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         if inputs_embeds is None:
-            try:
-                out = self.prepare_inputs_labels_for_multimodal(
-                    input_ids,
-                    position_ids,
-                    attention_mask,
-                    past_key_values,
-                    labels,
-                    images,
-                    image_sizes
-                )
-                if out is None or not isinstance(out, tuple) or len(out) != 6:
-                    raise RuntimeError("prepare_inputs_labels_for_multimodal returned invalid output")
-                (
-                    input_ids,
-                    position_ids,
-                    attention_mask,
-                    past_key_values,
-                    inputs_embeds,
-                    labels
-                ) = out
-                if inputs_embeds is None:
-                    inputs_embeds = self.get_model().embed_tokens(input_ids)
-            except Exception:
-                # Fallback to text-only embeddings if multimodal prep fails
-                inputs_embeds = self.get_model().embed_tokens(input_ids)
+            (
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                inputs_embeds,
+                labels
+            ) = self.prepare_inputs_labels_for_multimodal(
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                labels,
+                images,
+                image_sizes
+            )
 
         return super().forward(
             input_ids=input_ids,
@@ -456,8 +391,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-            cache_position=cache_position
+            return_dict=return_dict
         )
         
     def forward(
@@ -475,7 +409,6 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         image_sizes: Optional[List[List[int]]] = None,
         return_dict: Optional[bool] = None,
         is_coco = None,
-        cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -502,93 +435,26 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        # Prepare inputs for multimodal/text-only robustly. Avoid crashing when multimodal prep returns None.
         if inputs_embeds is None:
-            # Determine if we actually need multimodal prep for this call
-            needs_multimodal = False
-            try:
-                if images is not None:
-                    needs_multimodal = True
-                elif input_ids is not None:
-                    needs_multimodal = bool(torch.any(input_ids == -200).item())
-            except Exception:
-                pass
-
-            if needs_multimodal:
-                try:
-                    out = self.prepare_inputs_labels_for_multimodal(
-                        input_ids,
-                        position_ids,
-                        attention_mask,
-                        past_key_values,
-                        labels,
-                        images,
-                        image_sizes
-                    )
-                    if out is None or not isinstance(out, tuple) or len(out) != 6:
-                        raise RuntimeError("prepare_inputs_labels_for_multimodal returned invalid output")
-                    (
-                        input_ids,
-                        position_ids,
-                        attention_mask,
-                        past_key_values,
-                        inputs_embeds,
-                        labels
-                    ) = out
-                    if inputs_embeds is None:
-                        # Safety: if multimodal path didn't provide embeds, neutralize image tokens and embed text-only
-                        try:
-                            eos_id = int(getattr(self.config, 'eos_token_id', 0))
-                            if input_ids is not None:
-                                img_mask = (input_ids == -200)
-                                if img_mask.any():
-                                    input_ids = input_ids.masked_fill(img_mask, eos_id)
-                        except Exception:
-                            pass
-                        inputs_embeds = self.get_model().embed_tokens(input_ids)
-                except Exception:
-                    # Fallback to text-only: neutralize IMAGE_TOKEN_INDEX and embed
-                    try:
-                        eos_id = int(getattr(self.config, 'eos_token_id', 0))
-                        if input_ids is not None:
-                            img_mask = (input_ids == -200)
-                            if img_mask.any():
-                                input_ids = input_ids.masked_fill(img_mask, eos_id)
-                    except Exception:
-                        pass
-                    inputs_embeds = self.get_model().embed_tokens(input_ids)
-            else:
-                # Pure text path
-                inputs_embeds = self.get_model().embed_tokens(input_ids)
-            # If we already have embeddings (multimodal or text) and we're in inference, delegate to base Llama forward
-            # to ensure modern generation (cache_position/rotary embeddings) is handled correctly.
-            if inputs_embeds is not None and not self.training:
-                input_ids = None
-                return super().forward(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    inputs_embeds=inputs_embeds,
-                    labels=labels,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
-                    return_dict=return_dict,
-                    cache_position=cache_position,
-                )
+            (
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                inputs_embeds,
+                labels
+            ) = self.prepare_inputs_labels_for_multimodal(
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                labels,
+                images,
+                image_sizes
+            )
         
-        # Robustly derive image token mask; handle cases where input_ids is None (e.g., first step with inputs_embeds)
-        if input_ids is not None:
-            img_token_where = (input_ids == -200)
-        else:
-            if inputs_embeds is not None:
-                bsz, seqlen = inputs_embeds.shape[:2]
-                img_token_where = torch.zeros((bsz, seqlen), dtype=torch.bool, device=inputs_embeds.device)
-            else:
-                img_token_where = None
-        # Never pass both input_ids and inputs_embeds downstream; inputs_embeds takes precedence
-        if inputs_embeds is not None:
+        img_token_where = (input_ids == -200)
+        if self.training and inputs_embeds is not None:
             input_ids = None
         
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -611,8 +477,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             residual=self.residual,
-            target_layers=self.residual_target_layers,
-            cache_position=cache_position
+            target_layers=self.residual_target_layers
         )
 
         hidden_states = outputs[0]
@@ -707,8 +572,6 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             vra_loss = 0.
             valid_batch_count = 0
             for b in range(bsz):
-                if img_token_where is None:
-                    continue
                 img_tokens_b = img_token_where[b]
                 if img_tokens_b.any() and img_tokens_b.sum() == 576:
                     if self.only_coco and not is_coco[b]:
@@ -775,7 +638,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         diffusion_loss = torch.tensor(0.0, device=hidden_states.device)
         if self.diffusion_loss:
             bsz = hidden_states.shape[0]
-            if img_token_where is not None and img_token_where.sum() == bsz * 576:
+            if img_token_where.sum() == bsz * 576:
                 diffusion_loss = self.compute_vm_loss(images, hidden_states, img_token_where)
                 
             print(f"Diffusion loss: {diffusion_loss} || NTP loss: {loss}")
@@ -806,100 +669,35 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     ) -> Union[GenerateOutput, torch.LongTensor]:
         position_ids = kwargs.pop("position_ids", None)
         attention_mask = kwargs.pop("attention_mask", None)
-        # If caller provides precomputed embeddings, bypass multimodal prep and delegate directly.
-        if "inputs_embeds" in kwargs and kwargs["inputs_embeds"] is not None:
-            inputs_embeds = kwargs.pop("inputs_embeds")
-            # Ensure no conflicting identifiers are forwarded
-            kwargs.pop("input_ids", None)
-            kwargs.pop("inputs", None)
-            # attention_mask/position_ids are already extracted above; avoid duplicates in kwargs
-            kwargs.pop("attention_mask", None)
-            kwargs.pop("position_ids", None)
-            return super().generate(
-                position_ids=position_ids,
-                attention_mask=attention_mask,
-                inputs_embeds=inputs_embeds,
-                **kwargs,
-            )
+        if "inputs_embeds" in kwargs:
+            raise NotImplementedError("`inputs_embeds` is not supported")
 
         if images is not None:
-            try:
-                out = self.prepare_inputs_labels_for_multimodal(
-                    inputs,
-                    position_ids,
-                    attention_mask,
-                    None,
-                    None,
-                    images,
-                    image_sizes=image_sizes
-                )
-                # Validate output structure (6-tuple)
-                if out is None or not isinstance(out, tuple) or len(out) != 6:
-                    raise RuntimeError("prepare_inputs_labels_for_multimodal returned invalid output")
-                inputs, position_ids, attention_mask, _, inputs_embeds, _ = out
-                if inputs_embeds is None:
-                    # Fallback to text-only embeds if multimodal path produced None embeds
-                    try:
-                        from llava.constants import IMAGE_TOKEN_INDEX
-                        eos_id = int(getattr(self.config, 'eos_token_id', 0))
-                        if inputs is not None:
-                            img_mask = (inputs == IMAGE_TOKEN_INDEX)
-                            if img_mask.any():
-                                inputs = inputs.masked_fill(img_mask, eos_id)
-                    except Exception:
-                        pass
-                    inputs_embeds = self.get_model().embed_tokens(inputs)
-            except Exception:
-                # Last-resort fallback: ignore images and proceed with text-only
-                try:
-                    from llava.constants import IMAGE_TOKEN_INDEX
-                    eos_id = int(getattr(self.config, 'eos_token_id', 0))
-                    if inputs is not None:
-                        img_mask = (inputs == IMAGE_TOKEN_INDEX)
-                        if img_mask.any():
-                            inputs = inputs.masked_fill(img_mask, eos_id)
-                except Exception:
-                    pass
-                inputs_embeds = self.get_model().embed_tokens(inputs)
+            (
+                inputs,
+                position_ids,
+                attention_mask,
+                _,
+                inputs_embeds,
+                _
+            ) = self.prepare_inputs_labels_for_multimodal(
+                inputs,
+                position_ids,
+                attention_mask,
+                None,
+                None,
+                images,
+                image_sizes=image_sizes
+            )
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
 
-        # Primary path: rely on inputs_embeds (already computed) and let HF generate drive decoding
-        try:
-            # Ensure no conflicting identifiers are forwarded alongside inputs_embeds
-            kwargs.pop("input_ids", None)
-            kwargs.pop("inputs", None)
-            kwargs.pop("attention_mask", None)
-            kwargs.pop("position_ids", None)
-            return super().generate(
-                position_ids=position_ids,
-                attention_mask=attention_mask,
-                inputs_embeds=inputs_embeds,
-                **kwargs
-            )
-        except Exception:
-            # Conservative fallback: drop images and inputs_embeds; use sanitized input_ids only
-            try:
-                # Remove image-related kwargs if any leaked through
-                kwargs.pop('images', None)
-                kwargs.pop('image_sizes', None)
-                kwargs.pop('inputs_embeds', None)
-            except Exception:
-                pass
-            try:
-                eos_id = int(getattr(self.config, 'eos_token_id', 0))
-                if inputs is not None:
-                    img_mask = (inputs == -200)
-                    if img_mask.any():
-                        inputs = inputs.masked_fill(img_mask, eos_id)
-            except Exception:
-                pass
-            return super().generate(
-                input_ids=inputs,
-                position_ids=position_ids,
-                attention_mask=attention_mask,
-                **kwargs
-            )
+        return super().generate(
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            **kwargs
+        )
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
                                       inputs_embeds=None, **kwargs):
