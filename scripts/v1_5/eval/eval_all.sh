@@ -35,13 +35,13 @@ export HF_HOME="/leonardo_scratch/large/userexternal/fgaragna/dataset/mllm_evalu
 export HF_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral_lora/${run_name}"
+output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/${run_name}"
 
 # task_list=(pope mme gqa scienceqa_img mmmu_val seedbench ai2d textvqa_val)
 task_list=(pope mme)
 echo ${task_list[$SLURM_ARRAY_TASK_ID]}
 
-checkpoint_path="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/viral_lora/checkpoint-5000"
+checkpoint_path="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral_lora/viral_stage_2/checkpoint-5000"
 base_model="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys/vicuna-7b-v1.5"
 
 srun -c $SLURM_CPUS_PER_TASK --mem $SLURM_MEM_PER_NODE \
