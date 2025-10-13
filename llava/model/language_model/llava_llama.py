@@ -172,7 +172,7 @@ class ResidualLlamaModel(LlamaModel):
         if hasattr(self, '_use_flash_attention_2') and self._use_flash_attention_2:
             # 2d mask is passed through the layers
             attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
-        elif hasattr(self, '_use_sdpa') and self._use_sdpa and not output_attentions:
+        elif not output_attentions: # assume SDPA
             # output_attentions=True can not be supported when using SDPA, and we fall back on
             # the manual implementation that requires a 4D causal mask in all cases.
             attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
