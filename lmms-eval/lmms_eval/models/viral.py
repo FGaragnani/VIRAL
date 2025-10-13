@@ -860,6 +860,13 @@ class VIRAL(lmms):
             min_new_tokens = gen_kwargs.pop("min_new_tokens", None)
 
             pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
+            if debug_this:
+                try:
+                    eval_logger.debug(
+                        f"VIRAL DEBUG: special token ids => pad={pad_token_id}, eos={getattr(self.tokenizer,'eos_token_id',None)}, bos={getattr(self.tokenizer,'bos_token_id',None)}"
+                    )
+                except Exception:
+                    pass
             # Provide an attention mask only for pure text generation; for multimodal paths, let the model compute it
             attention_mask = None
             if images_arg is None:
@@ -949,6 +956,8 @@ class VIRAL(lmms):
                         stopping_criteria=stopping_criteria,
                         return_dict_in_generate=True,
                     )
+                    if debug_this:
+                        generate_common['output_scores'] = True
                     # Only include attention_mask for text-only runs
                     if attention_mask is not None and images_arg is None:
                         generate_common['attention_mask'] = attention_mask
@@ -1128,8 +1137,60 @@ class VIRAL(lmms):
                     try:
                         preview_tokens = new_tokens.tolist() if hasattr(new_tokens, 'tolist') else list(new_tokens)
                         eval_logger.debug(f"VIRAL DEBUG: new_tokens length={len(preview_tokens)} head={preview_tokens[:16]}")
+                        # Decode head tokens to strings for sanity
+                        head_decode = []
+                        for tid in preview_tokens[:8]:
+                            try:
+                                head_decode.append(self.tokenizer.decode([int(tid)], skip_special_tokens=False))
+                            except Exception:
+                                head_decode.append(str(tid))
+                        eval_logger.debug(f"VIRAL DEBUG: new_tokens head decoded={head_decode}")
+                        # Warn if the first N tokens are identical (degeneracy)
+                        if len(preview_tokens) >= 8 and all(t == preview_tokens[0] for t in preview_tokens[:8]):
+                            try:
+                                rep_tok = preview_tokens[0]
+                                rep_txt = self.tokenizer.decode([int(rep_tok)], skip_special_tokens=False)
+                            except Exception:
+                                rep_txt = str(preview_tokens[0])
+                            eval_logger.warning(f"VIRAL DEBUG: degenerate generation suspected — first 8 tokens are identical (id={preview_tokens[0]}, text={rep_txt!r})")
                     except Exception:
                         pass
+                # If we requested scores, show top-5 for the first step
+                try:
+                    if debug_this and hasattr(output_ids, 'scores') and output_ids.scores:
+                        import math
+                        first_step = output_ids.scores[0]
+                        probs = torch.softmax(first_step, dim=-1)
+                        topk = torch.topk(probs, k=5, dim=-1)
+                        ids = topk.indices[0].tolist() if probs.dim() == 2 else topk.indices.tolist()
+                        vals = topk.values[0].tolist() if probs.dim() == 2 else topk.values.tolist()
+                        decs = []
+                        for t in ids:
+                            try:
+                                decs.append(self.tokenizer.decode([int(t)], skip_special_tokens=False))
+                            except Exception:
+                                decs.append(str(t))
+                        eval_logger.debug(
+                            f"VIRAL DEBUG: step0 top5 ids={ids} probs={[round(v,4) for v in vals]} decs={decs}"
+                        )
+                        # Candidate check for yes/no/0/1 on first step
+                        cand_texts = ["Yes", "No", "yes", "no", "True", "False", "0", "1"]
+                        cand_map = {}
+                        for ct in cand_texts:
+                            try:
+                                ids_ct = self.tokenizer.encode(ct, add_special_tokens=False)
+                                if not ids_ct:
+                                    continue
+                                tid = int(ids_ct[0])
+                                p = probs[..., tid]
+                                p_val = float(p[0].item()) if p.dim() == 2 else float(p.item())
+                                cand_map[ct] = {"id": tid, "prob": round(p_val, 6)}
+                            except Exception:
+                                continue
+                        if cand_map:
+                            eval_logger.debug(f"VIRAL DEBUG: step0 candidate probs: {cand_map}")
+                except Exception:
+                    pass
                 text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
 
                 # Final defensive truncation by stopping strings
