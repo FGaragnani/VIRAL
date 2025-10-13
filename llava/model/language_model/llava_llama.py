@@ -157,7 +157,7 @@ class ResidualLlamaModel(LlamaModel):
             use_legacy_cache = not isinstance(past_key_values, Cache)
             if use_legacy_cache:
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            past_key_values_length = past_key_values.get_max_cache_shape(seq_length) + 1
+            past_key_values_length = past_key_values.get_max_length(seq_length)
 
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
@@ -172,7 +172,7 @@ class ResidualLlamaModel(LlamaModel):
         if hasattr(self, '_use_flash_attention_2') and self._use_flash_attention_2:
             # 2d mask is passed through the layers
             attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
-        elif not output_attentions: # assume SDPA
+        elif hasattr(self, '_use_sdpa') and self._use_sdpa and not output_attentions:
             # output_attentions=True can not be supported when using SDPA, and we fall back on
             # the manual implementation that requires a 4D causal mask in all cases.
             attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
