@@ -100,6 +100,7 @@ class Llava(lmms):
             # for older versions of LLaVA that don't have multimodal argument
             llava_model_args.pop("multimodal", None)
             self._tokenizer, self._model, self._image_processor, self._max_length = load_pretrained_model(pretrained, "/leonardo_scratch/large/userexternal/fgaragna/models/lmsys/vicuna-7b-v1.5", model_name, device_map=self.device_map, **llava_model_args)
+            eval_logger.info(f"Loaded pretrained model (2): {model_name}")
         self._config = self._model.config
         self.model.eval()
         if tie_weights:
