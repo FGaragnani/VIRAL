@@ -389,6 +389,8 @@ class Llava(lmms):
             attention_masks = input_ids.ne(pad_token_ids).to(self.device)
             # These steps are not in LLaVA's original code, but are necessary for generation to work
             # TODO: attention to this major generation step...
+            if image_tensor is None:
+                eval_logger.warning("image_tensor is None.")
             try:
                 cont = self.model.generate(
                     input_ids,
