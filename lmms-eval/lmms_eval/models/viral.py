@@ -227,7 +227,6 @@ class VIRAL(lmms):
                 # 2. Common vision model defaults for LLaVA-style models
                 vision_paths.extend([
                     "openai/clip-vit-large-patch14-336",
-                    "openai/clip-vit-large-patch14",
                     model_name or name_or_path
                 ])
                 

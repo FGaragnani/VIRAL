@@ -23,7 +23,7 @@
   "mm_use_im_start_end": false,
   "mm_vision_select_feature": "patch",
   "mm_vision_select_layer": -2,
-  "mm_vision_tower": "openai/clip-vit-large-patch14-224",
+  "mm_vision_tower": "openai/clip-vit-large-patch14-336",
   "model_type": "llava_llama",
   "num_attention_heads": 32,
   "num_hidden_layers": 32,
