@@ -99,73 +99,24 @@ class VIRAL(lmms):
                 self._device = torch.device(device)
                 self.device_map = device_map
 
-        # Determine model_name; detect LLaVA/LoRA from checkpoint contents and also
-        # pick an effective load path when adapters live in the parent run directory.
+        # Determine model_name; if it's not clearly a LLaVA model but the checkpoint looks multimodal,
+        # force a name that contains "llava" so the builder loads the correct subclass (matches training code).
         inferred_name = model_name if model_name is not None else get_model_name_from_path(name_or_path)
-        effective_path = name_or_path
         try:
             ckpt_dir = os.path.abspath(name_or_path)
-            parent_dir = os.path.dirname(ckpt_dir)
-
-            # Check for adapter files in current and parent directories
-            def has_lora_adapter(path: str) -> bool:
-                return any(
-                    os.path.isfile(os.path.join(path, fname))
-                    for fname in (
-                        "adapter_config.json",
-                        "adapter_model.bin",
-                        "adapter_model.safetensors",
-                    )
-                )
-
-            lora_here = has_lora_adapter(ckpt_dir)
-            lora_parent = has_lora_adapter(parent_dir)
-            # Prefer parent if current checkpoint folder lacks adapter/non-lora/projector but run root has them
-            parent_has_non_lora = os.path.isfile(os.path.join(parent_dir, "non_lora_trainables.bin"))
-            parent_has_mm_proj = os.path.isfile(os.path.join(parent_dir, "mm_projector.bin"))
-            here_has_non_lora = os.path.isfile(os.path.join(ckpt_dir, "non_lora_trainables.bin"))
-            here_has_mm_proj = os.path.isfile(os.path.join(ckpt_dir, "mm_projector.bin"))
-
-            if (not lora_here and lora_parent) or (
-                (not here_has_non_lora and parent_has_non_lora) or (not here_has_mm_proj and parent_has_mm_proj)
-            ):
-                eval_logger.debug(
-                    "VIRAL: Using parent run directory for loading (found adapters/non_lora/mm_projector only in parent): "
-                    f"{parent_dir}"
-                )
-                effective_path = parent_dir
-
-            # Re-compute flags against the effective load path
-            cfg_path = os.path.join(os.path.abspath(effective_path), "config.json")
+            cfg_path = os.path.join(ckpt_dir, "config.json")
             cfg_llava = False
             if os.path.isfile(cfg_path):
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg_json = json.load(f)
                 mt = str(cfg_json.get("model_type", ""))
                 cfg_llava = ("llava" in mt.lower()) or bool(cfg_json.get("mm_vision_tower")) or bool(cfg_json.get("vision_tower"))
-            mm_proj_exists_here = os.path.isfile(os.path.join(ckpt_dir, "mm_projector.bin"))
-            mm_proj_exists_eff = os.path.isfile(os.path.join(os.path.abspath(effective_path), "mm_projector.bin"))
-            mm_proj_exists = mm_proj_exists_here or mm_proj_exists_eff
-            lora_adapter_exists = lora_here or lora_parent
-
-            # Ensure 'llava' tag when the checkpoint looks multimodal (or contains adapters)
-            if ("llava" not in inferred_name.lower()) and (cfg_llava or mm_proj_exists or lora_adapter_exists):
-                eval_logger.debug(
-                    f"VIRAL: Overriding model_name to include 'llava' based on checkpoint contents: {inferred_name} -> llava-{inferred_name}"
-                )
+            mm_proj_exists = os.path.isfile(os.path.join(ckpt_dir, "mm_projector.bin"))
+            if ("llava" not in inferred_name.lower()) and (cfg_llava or mm_proj_exists):
+                eval_logger.debug(f"VIRAL: Overriding model_name to include 'llava' based on checkpoint contents: {inferred_name} -> llava-{inferred_name}")
                 inferred_name = f"llava-{inferred_name}"
-            # Ensure 'lora' tag to trigger merge path in load_pretrained_model
-            if lora_adapter_exists and ("lora" not in inferred_name.lower()):
-                eval_logger.debug(
-                    f"VIRAL: Detected PEFT adapter files; adding 'lora' tag: {inferred_name} -> lora-{inferred_name}"
-                )
-                inferred_name = f"lora-{inferred_name}"
-
-            eval_logger.info(
-                f"VIRAL: load path resolved -> effective_path={effective_path}, model_name={inferred_name}"
-            )
         except Exception as _e:
-            eval_logger.debug(f"VIRAL: Could not infer LLaVA/LoRA nature from checkpoint: {_e}")
+            eval_logger.debug(f"VIRAL: Could not infer LLaVA nature from checkpoint: {_e}")
         model_name = inferred_name
 
         # prepare kwargs for loader
@@ -181,7 +132,7 @@ class VIRAL(lmms):
 
 
         self._tokenizer, self._model, self._image_processor, self._max_length = load_pretrained_model(
-            effective_path, base, model_name, device_map=self.device_map, **loader_kwargs  # type: ignore[arg-type]
+            name_or_path, base, model_name, device_map=self.device_map, **loader_kwargs  # type: ignore[arg-type]
         )
 
         self._config = getattr(self._model, "config", None)
@@ -205,7 +156,7 @@ class VIRAL(lmms):
                 vision_paths.extend([
                     "openai/clip-vit-large-patch14-336",
                     "openai/clip-vit-large-patch14",
-                    model_name or effective_path
+                    model_name or name_or_path
                 ])
                 
                 # Try each path until one works
@@ -1194,14 +1145,6 @@ class VIRAL(lmms):
                             except Exception:
                                 head_decode.append(str(tid))
                         eval_logger.debug(f"VIRAL DEBUG: new_tokens head decoded={head_decode}")
-                        # Warn if the first N tokens are identical (degeneracy)
-                        if len(preview_tokens) >= 8 and all(t == preview_tokens[0] for t in preview_tokens[:8]):
-                            try:
-                                rep_tok = preview_tokens[0]
-                                rep_txt = self.tokenizer.decode([int(rep_tok)], skip_special_tokens=False)
-                            except Exception:
-                                rep_txt = str(preview_tokens[0])
-                            eval_logger.warning(f"VIRAL DEBUG: degenerate generation suspected — first 8 tokens are identical (id={preview_tokens[0]}, text={rep_txt!r})")
                     except Exception:
                         pass
                 # If we requested scores, show top-5 for the first step
@@ -1222,22 +1165,6 @@ class VIRAL(lmms):
                         eval_logger.debug(
                             f"VIRAL DEBUG: step0 top5 ids={ids} probs={[round(v,4) for v in vals]} decs={decs}"
                         )
-                        # Candidate check for yes/no/0/1 on first step
-                        cand_texts = ["Yes", "No", "yes", "no", "True", "False", "0", "1"]
-                        cand_map = {}
-                        for ct in cand_texts:
-                            try:
-                                ids_ct = self.tokenizer.encode(ct, add_special_tokens=False)
-                                if not ids_ct:
-                                    continue
-                                tid = int(ids_ct[0])
-                                p = probs[..., tid]
-                                p_val = float(p[0].item()) if p.dim() == 2 else float(p.item())
-                                cand_map[ct] = {"id": tid, "prob": round(p_val, 6)}
-                            except Exception:
-                                continue
-                        if cand_map:
-                            eval_logger.debug(f"VIRAL DEBUG: step0 candidate probs: {cand_map}")
                 except Exception:
                     pass
                 text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)

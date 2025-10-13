@@ -23,7 +23,7 @@
   "mm_use_im_start_end": false,
   "mm_vision_select_feature": "patch",
   "mm_vision_select_layer": -2,
-  "mm_vision_tower": "openai/clip-vit-large-patch14-336",
+  "mm_vision_tower": "openai/clip-vit-large-patch14-224",
   "model_type": "llava_llama",
   "num_attention_heads": 32,
   "num_hidden_layers": 32,
@@ -45,7 +45,7 @@
   "vra_loss": true,
   "target_layers": [16],
   "use_multiple_projectors": false,
-  "vra_target": "openai/clip-vit-large-patch14-336",
+  "vra_target": "openai/clip-vit-large-patch14-224",
   "vra_weight": 0.5,
   "projector_dim": 2048,
   "z_dim": 1024
