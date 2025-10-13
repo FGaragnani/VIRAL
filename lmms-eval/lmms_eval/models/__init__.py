@@ -5,8 +5,6 @@ import sys
 import hf_transfer
 from loguru import logger
 
-from .mllm import MLLM
-
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
 logger.remove()
