@@ -61,7 +61,7 @@ class Llava(lmms):
         attn_implementation=best_fit_attn_implementation,
         device_map="cuda:0",
         conv_template="vicuna_v1",
-        use_cache=False,
+        use_cache=True,
         tie_weights: bool = True,
         truncate_context=False,  # whether to truncate the context in generation, set it False for LLaVA-1.6
         customized_config=None,  # ends in json
