@@ -24,7 +24,6 @@ from transformers import AutoConfig, AutoModelForCausalLM, \
 
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
-from transformers.models.llama.modeling_llama import LLAMA_INPUTS_DOCSTRING, _CONFIG_FOR_DOC
 
 from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 from transformers.utils import (
@@ -107,7 +106,6 @@ class AlignmentProjector(nn.Module):
 class LlavaConfig(LlamaConfig):
     model_type = "llava_llama"
     
-from transformers.models.llama.modeling_llama import LLAMA_INPUTS_DOCSTRING
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask,
     _prepare_4d_causal_attention_mask_for_sdpa,
@@ -116,7 +114,6 @@ from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutpu
 from transformers.cache_utils import Cache, DynamicCache
 
 class ResidualLlamaModel(LlamaModel):
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -397,8 +394,6 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             return_dict=return_dict
         )
         
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
-    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
         input_ids: torch.LongTensor = None, # Need input ids for vra loss
