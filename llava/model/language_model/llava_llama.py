@@ -693,6 +693,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 image_sizes=image_sizes
             )
         else:
+            print("Warning: images are None for generation in LLavaLLamaForCausalLM.")
             inputs_embeds = self.get_model().embed_tokens(inputs)
 
         return super().generate(
