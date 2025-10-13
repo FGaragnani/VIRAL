@@ -34,6 +34,7 @@ export HF_DATASETS_CACHE="/leonardo_scratch/large/userexternal/fgaragna/dataset/
 export HF_HOME="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys"
 export HF_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
+export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="python"
 
 output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/${run_name}"
 
