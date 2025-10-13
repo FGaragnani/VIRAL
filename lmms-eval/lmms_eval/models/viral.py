@@ -111,15 +111,27 @@ class VIRAL(lmms):
             def has_lora_adapter(path: str) -> bool:
                 return any(
                     os.path.isfile(os.path.join(path, fname))
-                    for fname in ("adapter_config.json", "adapter_model.bin")
+                    for fname in (
+                        "adapter_config.json",
+                        "adapter_model.bin",
+                        "adapter_model.safetensors",
+                    )
                 )
 
             lora_here = has_lora_adapter(ckpt_dir)
             lora_parent = has_lora_adapter(parent_dir)
-            # Prefer parent if current checkpoint folder lacks adapter but run root has it
-            if not lora_here and lora_parent:
+            # Prefer parent if current checkpoint folder lacks adapter/non-lora/projector but run root has them
+            parent_has_non_lora = os.path.isfile(os.path.join(parent_dir, "non_lora_trainables.bin"))
+            parent_has_mm_proj = os.path.isfile(os.path.join(parent_dir, "mm_projector.bin"))
+            here_has_non_lora = os.path.isfile(os.path.join(ckpt_dir, "non_lora_trainables.bin"))
+            here_has_mm_proj = os.path.isfile(os.path.join(ckpt_dir, "mm_projector.bin"))
+
+            if (not lora_here and lora_parent) or (
+                (not here_has_non_lora and parent_has_non_lora) or (not here_has_mm_proj and parent_has_mm_proj)
+            ):
                 eval_logger.debug(
-                    f"VIRAL: PEFT adapters found in parent run dir; using parent for loading: {parent_dir}"
+                    "VIRAL: Using parent run directory for loading (found adapters/non_lora/mm_projector only in parent): "
+                    f"{parent_dir}"
                 )
                 effective_path = parent_dir
 
@@ -148,6 +160,10 @@ class VIRAL(lmms):
                     f"VIRAL: Detected PEFT adapter files; adding 'lora' tag: {inferred_name} -> lora-{inferred_name}"
                 )
                 inferred_name = f"lora-{inferred_name}"
+
+            eval_logger.info(
+                f"VIRAL: load path resolved -> effective_path={effective_path}, model_name={inferred_name}"
+            )
         except Exception as _e:
             eval_logger.debug(f"VIRAL: Could not infer LLaVA/LoRA nature from checkpoint: {_e}")
         model_name = inferred_name
