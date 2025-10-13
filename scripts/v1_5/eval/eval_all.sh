@@ -41,7 +41,7 @@ output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/${ru
 task_list=(pope mme)
 echo ${task_list[$SLURM_ARRAY_TASK_ID]}
 
-checkpoint_path="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/viral_stage_2"
+checkpoint_path="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/viral_stage_2/checkpoint-5000"
 base_model="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys/vicuna-7b-v1.5"
 
 srun -c $SLURM_CPUS_PER_TASK --mem $SLURM_MEM_PER_NODE \

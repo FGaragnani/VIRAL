@@ -136,6 +136,78 @@ class VIRAL(lmms):
         )
 
         self._config = getattr(self._model, "config", None)
+        # --- Sanity diagnostics for tokenizer/model compatibility ---
+        try:
+            tok_len = None
+            try:
+                tok_len = int(len(self._tokenizer))  # includes added tokens
+            except Exception:
+                tok_len = int(getattr(self._tokenizer, 'vocab_size', 0))
+            emb_rows = None
+            emb = None
+            try:
+                emb = self._model.get_input_embeddings()
+            except Exception:
+                pass
+            if emb is None:
+                try:
+                    base_model = getattr(self._model, 'model', None)
+                    emb = getattr(base_model, 'embed_tokens', None)
+                except Exception:
+                    emb = None
+            if emb is not None and hasattr(emb, 'weight'):
+                try:
+                    emb_rows = int(getattr(emb.weight, 'shape', [0, 0])[0])
+                except Exception:
+                    emb_rows = None
+            cfg_vocab = None
+            try:
+                cfg_vocab = int(getattr(self._config, 'vocab_size', 0)) if self._config is not None else None
+            except Exception:
+                cfg_vocab = None
+            # Report mismatches that often cause garbage generations
+            if tok_len and emb_rows and emb_rows != tok_len:
+                eval_logger.warning(
+                    f"VIRAL: tokenizer/model vocab mismatch: len(tokenizer)={tok_len} vs input_embedding_rows={emb_rows}."\
+                    "\nThis is a common source of gibberish outputs. Ensure the tokenizer and base model match, "\
+                    "and that resize_token_embeddings(len(tokenizer)) has been applied."
+                )
+                # Optional auto-fix via env flag
+                try:
+                    if str(os.getenv('VIRAL_AUTO_RESIZE_EMB', '')).lower() in ("1", "true", "yes"):
+                        self._model.resize_token_embeddings(tok_len, pad_to_multiple_of=None)  # type: ignore[attr-defined]
+                        eval_logger.info(f"VIRAL: auto-resized input embeddings to {tok_len} (VIRAL_AUTO_RESIZE_EMB)")
+                        # refresh emb_rows for downstream logic
+                        try:
+                            emb = self._model.get_input_embeddings()
+                            emb_rows = int(getattr(emb.weight, 'shape', [0, 0])[0]) if emb is not None else emb_rows
+                        except Exception:
+                            pass
+                except Exception as e:
+                    eval_logger.debug(f"VIRAL: auto-resize embeddings failed/unsupported: {e}")
+            if cfg_vocab and tok_len and cfg_vocab != tok_len:
+                eval_logger.debug(
+                    f"VIRAL: config.vocab_size={cfg_vocab} differs from len(tokenizer)={tok_len}; this can be OK if embeddings were resized."
+                )
+            # Basic special token checks
+            try:
+                if getattr(self._tokenizer, 'pad_token_id', None) is None:
+                    # Some Vicuna/LLaMA tokenizers lack pad; set to eos to keep generation sane
+                    self._tokenizer.pad_token = self._tokenizer.eos_token  # type: ignore[attr-defined]
+                    eval_logger.info("VIRAL: tokenizer had no pad_token; set pad_token=eos_token for stability.")
+            except Exception:
+                pass
+            # Log vision tower source for awareness
+            try:
+                vt_name = None
+                if self._config is not None:
+                    vt_name = getattr(self._config, 'mm_vision_tower', None) or getattr(self._config, 'vision_tower', None)
+                if vt_name:
+                    eval_logger.info(f"VIRAL: vision tower => {vt_name}")
+            except Exception:
+                pass
+        except Exception:
+            pass
         # Ensure image processor is always set
         if self._image_processor is None:
             try:
