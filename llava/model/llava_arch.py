@@ -341,7 +341,7 @@ class LlavaMetaForCausalLM(ABC):
 
         if _labels is None:
             new_labels = None
-            new_input_ids = None
+            # new_input_ids = None
         else:
             new_labels = new_labels_padded
             new_input_ids = new_input_ids_padded
