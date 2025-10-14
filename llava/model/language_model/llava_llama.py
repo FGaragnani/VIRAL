@@ -708,6 +708,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             eval_logger.warning("Inputs embeds is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
 
         return super().generate(
+            input_ids=inputs,
             position_ids=position_ids,
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
