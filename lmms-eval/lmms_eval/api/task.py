@@ -1043,6 +1043,8 @@ class ConfigurableTask(Task):
             # `ds = load_datasets("lmms-lab/MMMU")`
             self.dataset = datasets.load_from_disk(path=self.DATASET_PATH, name=self.DATASET_NAME)
         else:
+            from loguru import logger as eval_logger
+            eval_logger.info(f"Downloading dataset {self.DATASET_PATH}, name={self.DATASET_NAME}...")
             self.dataset = datasets.load_dataset(
                 path=self.DATASET_PATH,
                 name=self.DATASET_NAME,
