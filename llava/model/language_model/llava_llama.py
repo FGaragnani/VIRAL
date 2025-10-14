@@ -346,6 +346,9 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         # Initialize weights and apply final processing
         self.post_init()
 
+    def evaluate(self):
+        self.vra_loss = False
+
     def get_model(self):
         return self.model
 
@@ -675,9 +678,6 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         position_ids = kwargs.pop("position_ids", None)
         attention_mask = kwargs.pop("attention_mask", None)
         
-        if inputs is None:
-            eval_logger.warning("Inputs are None for LLavaLlamaForCausalLM.generate upon calling. This might lead to unexpected behavior.")
-
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
 
@@ -705,8 +705,6 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             eval_logger.warning("Attention mask is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
         elif inputs_embeds is None:
             eval_logger.warning("Inputs embeds is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
-        elif inputs is None:
-            eval_logger.warning("Inputs is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
 
         return super().generate(
             input_ids=inputs,

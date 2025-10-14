@@ -105,6 +105,7 @@ class Llava(lmms):
                 eval_logger.warning("self._image_processor is None.")
         self._config = self._model.config
         self.model.eval()
+        self.model.evaluate()
         if tie_weights:
             self.model.tie_weights()
 
@@ -402,7 +403,7 @@ class Llava(lmms):
                 eval_logger.debug(f"input_ids.shape: {input_ids.shape}")
                 eval_logger.debug(f"attention_masks.shape: {attention_masks.shape}")
             try:
-                cont = self.model(
+                cont = self.model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_masks,
                     pad_token_id=pad_token_ids,
