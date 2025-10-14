@@ -1,0 +1,54 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{amsmath}
+\usepackage{graphicx}  
+\usepackage{array}  
+\usepackage{multirow}
+\usepackage{xcolor}
+
+\begin{document}
+	
+	\section*{Risultati --- 14/10/2025}
+	
+	\begin{table}[h]
+		\centering
+		\begin{tabular}{@{} l l >{\centering\arraybackslash}p{3.5cm} >{\centering\arraybackslash}p{3.5cm} c @{}}
+			\toprule
+			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Perception Score} & \textbf{Cognition Score} & \textbf{LLaVA Baseline} \\
+			\midrule
+			Viral & mme & $\textcolor{red}{1369.6774\,\downarrow}$ & $\textcolor{red}{260.7143\,\downarrow}$ & $\textcolor{green!50!black}{1510.8/348.2}$ \\
+			\midrule
+			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Exact Match} & \textbf{stderr} & \textbf{LLaVA Baseline} \\
+			\midrule
+			Viral & ai2d & $\textcolor{red}{0.5214\,\downarrow}$ & 0.009 & $\textcolor{green!50!black}{0.548\,\uparrow}$ \\
+			\addlinespace[6pt]
+			Viral & scienceqa\_img & & & 0.704 \\
+			\addlinespace[6pt]
+			Viral & gqa & $\textcolor{red}{0.5709\,\downarrow}$ & 0.0044 & $\textcolor{green!50!black}{0.620\,\uparrow}$ \\
+			\addlinespace[6pt]
+			Viral & textvqa\_val & $\textcolor{red}{0.5204\,\downarrow}$ & 0.0068 & \\
+			\midrule
+			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Accuracy} & & \textbf{LLaVA Baseline} \\
+			\midrule
+			Viral & mmmu\_val & $\textcolor{red}{0.33\,\downarrow}$ & & $\textcolor{green!50!black}{0.353\,\uparrow}$ \\
+			\midrule
+			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Accuracy} & \textbf{F1 Score}  & \textbf{LLaVA Baseline}\\
+			\midrule
+			Viral & pope & 0.8241 & $\textcolor{red}{0.7931\,\downarrow}$ & $\textcolor{green!50!black}{0.859\,\uparrow}$ \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	\begin{table}[h]
+		\centering
+		\begin{tabular}{@{} l l c c c c}
+			\toprule
+			\textbf{Third Stage} & \textbf{Dataset} & \textbf{seed\_all} & \textbf{image} & \textbf{video} & \textbf{LLaVA Baseline}\\ \midrule
+			Viral & seedbench & & & & 60.5 \\
+		\end{tabular}
+	\end{table}
+	
+\end{document}
