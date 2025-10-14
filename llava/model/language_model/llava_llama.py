@@ -674,6 +674,9 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     ) -> Union[GenerateOutput, torch.LongTensor]:
         position_ids = kwargs.pop("position_ids", None)
         attention_mask = kwargs.pop("attention_mask", None)
+        if position_ids is None:
+            eval_logger.warning("Position ids is None for LLavaLlamaForCausalLM.generate upon calling. This might lead to unexpected behavior.")
+        
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
 

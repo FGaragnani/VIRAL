@@ -352,9 +352,6 @@ class LlavaMetaForCausalLM(ABC):
         else:
             attention_mask = attention_mask.to(dtype=_attention_mask.dtype)
 
-        if _position_ids is None:
-            position_ids = None
-
         return new_input_ids, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
 
     def initialize_vision_tokenizer(self, model_args, tokenizer):
