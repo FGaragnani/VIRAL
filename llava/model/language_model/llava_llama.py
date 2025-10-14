@@ -501,7 +501,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             elif 'clip' in self.vra_target:
                 self.alignment_encoder = self.model.vision_tower # Assume grad in disabled
                 assert self.alignment_encoder is not None, "CLIP vision tower is not loaded."
-                images_resized = F.interpolate(images, size=(336, 336), mode="bilinear") # Maybe it is better to use 224 and upsample feature or downsample llm feature
+                images_resized = F.interpolate(images, size=(224, 224), mode="bilinear") # Maybe it is better to use 224 and upsample feature or downsample llm feature
                 self.alignment_encoder.eval()
                 with torch.no_grad():
                     alignment_feature = self.alignment_encoder(images_resized)
