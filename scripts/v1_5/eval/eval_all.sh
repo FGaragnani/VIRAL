@@ -39,7 +39,7 @@ export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="python"
 output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/${run_name}"
 
 # task_list=(gqa scienceqa_img mmmu_val seedbench ai2d textvqa_val)
-task_list=(seedbench textvqa_val)
+task_list=(seedbench scienceqa_img)
 echo ${task_list[$SLURM_ARRAY_TASK_ID]}
 
 checkpoint_path="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/viral_llava_lora/"
