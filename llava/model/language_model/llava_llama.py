@@ -46,6 +46,8 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 import numpy as np
 
+from loguru import logger as eval_logger
+
 def visualize_feature_pca(features, save_path='feature.png'):
     # CPU로 이동하고 numpy로 변환
     features_np = features.float().squeeze(0).detach().cpu().numpy()
@@ -694,6 +696,13 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             )
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
+
+        if attention_mask is None:
+            eval_logger.warning("Attention mask is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
+        elif position_ids is None:
+            eval_logger.warning("Position ids is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
+        elif inputs_embeds is None:
+            eval_logger.warning("Inputs embeds is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
 
         return super().generate(
             position_ids=position_ids,
