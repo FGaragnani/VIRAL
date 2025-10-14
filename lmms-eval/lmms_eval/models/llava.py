@@ -404,7 +404,7 @@ class Llava(lmms):
                 eval_logger.debug(f"attention_masks.shape: {attention_masks.shape}")
             try:
                 cont = self.model.generate(
-                    input_ids=input_ids,
+                    input_ids,
                     attention_mask=attention_masks,
                     pad_token_id=pad_token_ids,
                     images=image_tensor,
