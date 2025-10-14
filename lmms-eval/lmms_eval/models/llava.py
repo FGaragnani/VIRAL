@@ -391,6 +391,16 @@ class Llava(lmms):
             # TODO: attention to this major generation step...
             if image_tensor is None:
                 eval_logger.warning("image_tensor is None.")
+            elif input_ids is None:
+                eval_logger.warning("input_ids is None.")
+            elif attention_masks is None:
+                eval_logger.warning("attention_masks is None.")
+            elif gen_kwargs["image_sizes"] is None:
+                eval_logger.warning("gen_kwargs['image_sizes'] is None.")
+            else:
+                eval_logger.debug(f"LLlaVa generation in lmms-eval correctly receives all inputs.")
+                eval_logger.debug(f"input_ids.shape: {input_ids.shape}")
+                eval_logger.debug(f"attention_masks.shape: {attention_masks.shape}")
             try:
                 cont = self.model.generate(
                     input_ids,
