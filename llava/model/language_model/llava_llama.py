@@ -438,8 +438,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        if images is None:
-            print("Warning: images are None for LLavaLLamaForCausalLM.")
+        if input_ids is None:
+            print("Warning: input_ids are None for LLavaLLamaForCausalLM.")
         if inputs_embeds is None:
             (
                 input_ids,
@@ -674,9 +674,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     ) -> Union[GenerateOutput, torch.LongTensor]:
         position_ids = kwargs.pop("position_ids", None)
         attention_mask = kwargs.pop("attention_mask", None)
-        if position_ids is None:
-            eval_logger.warning("Position ids is None for LLavaLlamaForCausalLM.generate upon calling. This might lead to unexpected behavior.")
         
+        if inputs is None:
+            eval_logger.warning("Inputs are None for LLavaLlamaForCausalLM.generate upon calling. This might lead to unexpected behavior.")
+
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
 
@@ -702,10 +703,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
 
         if attention_mask is None:
             eval_logger.warning("Attention mask is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
-        elif position_ids is None:
-            eval_logger.warning("Position ids is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
         elif inputs_embeds is None:
             eval_logger.warning("Inputs embeds is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
+        elif inputs is None:
+            eval_logger.warning("Inputs is None for LLavaLlamaForCausalLM.generate. This might lead to unexpected behavior.")
 
         return super().generate(
             input_ids=inputs,
