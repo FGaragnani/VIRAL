@@ -21,7 +21,9 @@ module load gcc/11.3.0
 source activate viral
 cd ~/viral
 
-export PYTHONPATH=.
+REPO_ROOT="$HOME/viral"
+export PYTHONPATH="${REPO_ROOT}:$REPO_ROOT/lmms-eval:$PYTHONPATH"
+
 export PYTHONUNBUFFERED=1
 export TRANSFORMERS_VERBOSITY=info
 export TOKENIZERS_PARALLELISM=false
