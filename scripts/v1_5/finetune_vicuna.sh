@@ -22,7 +22,7 @@ source activate viral
 cd ~/viral
 
 REPO_ROOT="$HOME/viral"
-export PYTHONPATH="${REPO_ROOT}:$REPO_ROOT/lmms-eval:$PYTHONPATH"
+export PYTHONPATH="${REPO_ROOT}:$PYTHONPATH"
 
 export PYTHONUNBUFFERED=1
 export TRANSFORMERS_VERBOSITY=info
