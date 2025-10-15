@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=viral_stage_2
+#SBATCH --job-name=viral_llava_lora_dino
 #SBATCH --output=/leonardo_scratch/large/userexternal/fgaragna/logs/%x-%j.out
 #SBATCH --error=/leonardo_scratch/large/userexternal/fgaragna/logs/%x-%j.err
 #SBATCH --open-mode=truncate
