@@ -25,7 +25,7 @@ REPO_ROOT="$HOME/viral"
 export PYTHONPATH="${REPO_ROOT}:$PYTHONPATH"
 
 export PYTHONUNBUFFERED=1
- export TORCH_HOME="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys"
+# export TORCH_HOME="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys"
 export TRANSFORMERS_VERBOSITY=info
 export TOKENIZERS_PARALLELISM=false
 export WANDB_MODE=offline
