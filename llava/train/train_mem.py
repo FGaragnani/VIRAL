@@ -1,4 +1,4 @@
-from .train import train
+from llava.train.train import train
 import wandb
 
 # wandb.login(key="")
