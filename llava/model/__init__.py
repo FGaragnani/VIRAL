@@ -4,5 +4,6 @@ try:
     from .language_model.llava_mpt import LlavaMptForCausalLM, LlavaMptConfig
     from .language_model.llava_mistral import LlavaMistralForCausalLM, LlavaMistralConfig
 except Exception as e:
-    print(f"Import error: {e}")
-    pass
+    import traceback
+    print("Failed importing model language backends:", file=sys.stderr)
+    traceback.print_exc()
