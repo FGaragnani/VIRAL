@@ -5,5 +5,5 @@ try:
     from .language_model.llava_mistral import LlavaMistralForCausalLM, LlavaMistralConfig
 except Exception as e:
     import traceback
-    print("Failed importing model language backends:", file=sys.stderr)
+    print("Failed importing model language backends:")
     traceback.print_exc()
