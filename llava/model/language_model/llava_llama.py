@@ -441,8 +441,6 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-        if input_ids is None:
-            print("Warning: input_ids are None for LLavaLLamaForCausalLM.")
         if inputs_embeds is None:
             (
                 input_ids,
