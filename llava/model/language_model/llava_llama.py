@@ -296,7 +296,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                     if 'reg' in self.vra_target:
                         self.alignment_encoder = torch.hub.load('facebookresearch/dinov2', f'dinov2_vit{model_config}14_reg')
                     else:
-                        self.alignment_encoder = torch.hub.load("/leonardo_scratch/large/userexternal/fgaragna/models/lmsys/hub/facebookresearch_dinov2_main", f'dinov2_vit{model_config}14')
+                        self.alignment_encoder = torch.hub.load("/leonardo_scratch/large/userexternal/fgaragna/models/lmsys/hub/facebookresearch_dinov2_main", f'dinov2_vit{model_config}14', source="local")
                     del self.alignment_encoder.head
                     patch_resolution = 24
                     self.alignment_encoder.pos_embed.data = timm.layers.pos_embed.resample_abs_pos_embed(
