@@ -31,6 +31,7 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export HF_HUB_CACHE="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys"
 # export HF_DATASETS_CACHE="/leonardo_scratch/large/userexternal/fcocchi0/rag_mlmm/dataset/mllm_evaluation/cvprw"
 export HF_DATASETS_CACHE="/leonardo_scratch/large/userexternal/fgaragna/dataset/mllm_evaluation/cvprw"
+export TORCH_HOME="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys"
 export HF_HOME="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys"
 export HF_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
