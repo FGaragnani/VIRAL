@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=boost_usr_prod
 #SBATCH --account=IscrB_MLLM-RAG
-#SBATCH --array=0-0
+#SBATCH --array=0-7
 #SBATCH --time=05:30:00
 
 module load anaconda3/2022.05
@@ -40,8 +40,8 @@ export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="python"
 
 output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/${run_name}"
 
-# task_list=(gqa scienceqa_img mmmu_val seedbench ai2d textvqa_val)
-task_list=(gqa)
+task_list=(gqa scienceqa_img mmmu_val seedbench ai2d textvqa_val)
+# task_list=(gqa)
 echo ${task_list[$SLURM_ARRAY_TASK_ID]}
 
 checkpoint_path="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/viral_llava_lora_dino/"
