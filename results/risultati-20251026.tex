@@ -18,9 +18,13 @@
 		\centering
 		\begin{tabular}{ll|cccc}
 			\toprule
-			\textbf{Dataset} & \textbf{VRA-Target} & \texttt{CHAIR} & \texttt{Cover} & \texttt{Hal} & \texttt{Cog} \\
+			\textbf{Dataset} & \textbf{VRA-Target} & \texttt{CHAIR} $\downarrow$ & \texttt{Cover} $\uparrow$ & \texttt{Hal} $\downarrow$ & \texttt{Cog} $\downarrow$ \\
 			\midrule
-			AMBER & clip-vit-large-patch14 & $10.0$ & $49.5$ & $39.7$ & $4.6$ \\
+			AMBER & clip-vit-large-patch14 & \textcolor{red!90}{10.0} & \textcolor{red!90}{49.5} & \textcolor{red!90}{39.7} & \textcolor{green!50!black!50}{4.6} \\
+			\midrule
+			AMBER & dinov2-vit-b & \textcolor{green!50!black!50}{8.9} & \textcolor{green!50!black!50}{51} & \textcolor{green!50!black!50}{38.3} & \textcolor{red!90}{4.7} \\
+			\midrule \midrule
+			AMBER & CHAIR-DPO & 3.0 & 46.6 & 14.7 & 1.3 \\
 			\bottomrule
 		\end{tabular}
 	\end{table}
