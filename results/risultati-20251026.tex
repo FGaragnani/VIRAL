@@ -31,29 +31,29 @@
 	
 	\begin{table}[h]
 		\centering
-		\begin{tabular}{@{} l l >{\centering\arraybackslash}p{3.5cm} >{\centering\arraybackslash}p{3.5cm} c @{}}
+		\begin{tabular}{@{} l l >{\centering\arraybackslash}p{2.5cm} >{\centering\arraybackslash}p{2.5cm} >{\centering\arraybackslash}p{2.5cm} c @{}}
 			\toprule
-			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Perception Score} & \textbf{Cognition Score} & \textbf{LLaVA Baseline} \\
+			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Perception Score} & \textbf{Cognition Score} & \textbf{VIRAL} & \textbf{LLaVA Baseline} \\
 			\midrule
-			Viral & mme & \textcolor{red!90}{1454.9864\, $\downarrow$} & \textcolor{red!90}{280.3571\, $\downarrow$} & \textcolor{green!50!black}{1510.8/348.2} \\
+			Viral & mme & \textcolor{red!90}{1454.9864\, $\downarrow$} & \textcolor{red!90}{280.3571\, $\downarrow$} & 1694.52 & \textcolor{green!50!black}{1510.8/348.2} \\
 			\midrule
-			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Exact Match} & \textbf{stderr} & \textbf{LLaVA Baseline} \\
+			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Exact Match} & \textbf{stderr} & \textbf{VIRAL} & \textbf{LLaVA Baseline} \\
 			\midrule
-			Viral & ai2d & \textcolor{red!90}{0.5434\, $\downarrow$} & 0.009 & \textcolor{green!50!black}{0.548\, $\uparrow$} \\
+			Viral & ai2d & \textcolor{red!90}{0.5434\, $\downarrow$} & 0.009 & & \textcolor{green!50!black}{0.548\, $\uparrow$} \\
 			\addlinespace[6pt]
-			Viral & scienceqa\_img & \textcolor{red!90}{0.6842\, $\downarrow$} & 0.0104 & \textcolor{green!50!black}{0.704\, $\uparrow$} \\
+			Viral & scienceqa\_img & \textcolor{red!90}{0.6842\, $\downarrow$} & 0.0104 & & \textcolor{green!50!black}{0.704\, $\uparrow$} \\
 			\addlinespace[6pt]
-			Viral & gqa & \textcolor{red!90}{0.61\, $\downarrow$} & 0.0043 & \textcolor{green!50!black}{0.620\, $\uparrow$} \\
+			Viral & gqa & \textcolor{red!90}{0.61\, $\downarrow$} & 0.0043 & & \textcolor{green!50!black}{0.620\, $\uparrow$} \\
 			\addlinespace[6pt]
-			Viral & textvqa\_val & & & \\
+			Viral & textvqa\_val & & & & \\
 			\midrule
-			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Accuracy} & & \textbf{LLaVA Baseline} \\
+			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Accuracy} & & \textbf{VIRAL} & \textbf{LLaVA Baseline} \\
 			\midrule
-			Viral & mmmu\_val & \textcolor{red!90}{0.3433\, $\downarrow$} & & \textcolor{green!50!black}{0.353\, $\uparrow$} \\
+			Viral & mmmu\_val & \textcolor{red!90}{0.3433\, $\downarrow$} & & & \textcolor{green!50!black}{0.353\, $\uparrow$} \\
 			\midrule
-			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Accuracy} & \textbf{F1 Score}  & \textbf{LLaVA Baseline}\\
+			\textbf{Third Stage} & \textbf{Dataset} & \textbf{Accuracy} & \textbf{F1 Score} & \textbf{VIRAL} & \textbf{LLaVA Baseline}\\
 			\midrule
-			Viral & pope & 0.8636 & \textcolor{red!90}{0.8522\, $\downarrow$} & \textcolor{green!50!black}{0.859\, $\uparrow$} \\
+			Viral & pope & 0.8636 & \textcolor{red!90}{0.8522\, $\downarrow$} & 0.8832 & \textcolor{green!50!black}{0.859\, $\uparrow$} \\
 			\bottomrule
 		\end{tabular}
 	\end{table}
