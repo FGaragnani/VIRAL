@@ -1,5 +1,7 @@
+import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import AutoModel, AutoImageProcessor
 
 class TransformerBlock(nn.Module):
@@ -34,8 +36,15 @@ class TransformerBlock(nn.Module):
 
 class PatchEmbedder(nn.Module):
     """
-        Embed image patches using a pretrained model and aggregate embeddings.
-        Should help a MLLM to better understand image patches.
+        Embed image patches using a pretrained model and aggregate or return tokens.
+        Intended to serve as a lightweight, frozen teacher for VRA.
+
+        agg_mode:
+          - "cls": return CLS token [B, D]
+          - "mean": mean over patch tokens [B, D]
+          - "max": max over patch tokens [B, D]
+          - "attn": learn a small attention block, return first token [B, D]
+          - "tokens": return patch tokens [B, P, D] (no aggregation)
     """
     def __init__(self, model_name="facebook/dinov2-base", agg_mode="mean", device="cuda"):
         super().__init__()
@@ -88,3 +97,9 @@ class PatchEmbedder(nn.Module):
             raise ValueError(f"Unknown agg_mode: {self.agg_mode}")
 
         return agg  # [N, D]
+    
+    def _get_model_image_size(self):
+        try:
+            return self.model.config.image_size
+        except AttributeError:
+            return None

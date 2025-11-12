@@ -36,6 +36,8 @@ from torch.nn import CrossEntropyLoss
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
+from embedder import PatchEmbedder
+
 # IMAGENET_DEFAULT_MEAN = [0.48145466, 0.4578275, 0.40821073]
 # IMAGENET_DEFAULT_STD = [0.26862954, 0.26130258, 0.27577711]
 
@@ -283,6 +285,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             self.alignment_loss = config.alignment_loss if hasattr(config, 'alignment_loss') else "direct" #"direct" # direct, similarity
             self.use_projector = config.use_projector if hasattr(config, 'use_projector') else False # If False, use the mid hidden states directly, only for similarity loss.
             self.use_multiple_projectors = config.use_multiple_projectors if hasattr(config, 'use_multiple_projectors') else False # If True, use multiple projectors for each layer, only for similarity loss.
+            self.glamm_train = config.glamm_train if hasattr(config, 'glamm_train') else False # Use the GLAMM embedder to train
+            self.glamm_mode = config.glamm_mode if hasattr(config, 'glamm_mode') else "mean" # One of 'mean', 'cls', 'attn', 'max'
             if self.target_layers is not None:
                 if self.use_multiple_projectors:
                     self.alignment_projector = nn.ModuleList([
@@ -342,7 +346,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                     
                     del dv2
                     torch.cuda.empty_cache()
-                    
+
+        if self.glamm_train:
+            self.patch_embedder = PatchEmbedder(agg_mode=config.glamm_mode, device=config.device)
+
         # Initialize weights and apply final processing
         self.post_init()
 

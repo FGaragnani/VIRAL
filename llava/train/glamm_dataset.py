@@ -17,7 +17,7 @@ class GranDDataset(Dataset):
                  patch_size=(224,224), 
                  check_area: float = 0.05):
         self.image_dir = image_dir
-        self.patch_size = patch_size
+        self.patch_size = patch_size if patch_size is not None else (224, 224)
         self.transform = self._resize_and_pad
         self.annotations = [json.load(open(os.path.join(annotation_dir, f))) for f in os.listdir(annotation_dir)]
         self.check_area_fn = (lambda img_size, patch_size: (patch_size/img_size) > check_area)
