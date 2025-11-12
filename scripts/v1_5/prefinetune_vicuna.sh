@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --partition=all_usr_prod
 #SBATCH --account=cvcs2025
-#SBATCH --time=24:00:00
+#SBATCH --time=18:00:00
 
 module load anaconda3/2022.05
 module load profile/deeplrn
