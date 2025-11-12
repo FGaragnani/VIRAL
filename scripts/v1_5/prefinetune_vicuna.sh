@@ -112,4 +112,7 @@ llava/train/train_mem.py \
 --run_name $run_name \
 --lazy_preprocess True \
 --report_to wandb \
---config_path ./config_2.json
+--config_path ./config_2.json \
+--use_glamm True \
+--grand_image_dir "" \
+--grand_annotation_dir ""

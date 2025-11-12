@@ -21,7 +21,7 @@ import json
 import logging
 import pathlib
 from typing import Dict, Optional, Sequence, List
-from glamm_dataset import GranDDataset
+from .glamm_dataset import GranDDataset
 
 import torch
 
@@ -73,6 +73,12 @@ class DataArguments:
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
+    use_glamm: bool = False
+    # GranD/GLAMM-specific
+    grand_image_dir: Optional[str] = field(default=None, metadata={"help": "Directory with images for GranD dataset."})
+    grand_annotation_dir: Optional[str] = field(default=None, metadata={"help": "Directory with per-image JSON annotations (image_name.json)."})
+    flatten_patches: bool = True
+    prompt_template: Optional[str] = field(default=None, metadata={"help": "Optional instruction text for the human turn when training on patches."})
 
 
 @dataclass
@@ -991,9 +997,25 @@ class DataCollatorForSupervisedDataset(object):
 def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                                 data_args) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = LazySupervisedDataset(tokenizer=tokenizer,
-                                data_path=data_args.data_path,
-                                data_args=data_args)
+    if not getattr(data_args, 'use_glamm', False):
+        train_dataset = LazySupervisedDataset(
+            tokenizer=tokenizer,
+            data_path=data_args.data_path,
+            data_args=data_args,
+        )
+    else:
+        # Validate required args for GranD wiring
+        if not data_args.grand_image_dir or not data_args.grand_annotation_dir:
+            raise ValueError("When use_glamm=True, you must set grand_image_dir and grand_annotation_dir in DataArguments.")
+        train_dataset = GranDDataset(
+            image_dir=data_args.grand_image_dir,
+            annotation_dir=data_args.grand_annotation_dir,
+            tokenizer=tokenizer,
+            data_args=data_args,
+            image_processor=getattr(data_args, 'image_processor', None),
+            flatten_patches=getattr(data_args, 'flatten_patches', True),
+            prompt_template=getattr(data_args, 'prompt_template', None),
+        )
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset,
                 eval_dataset=None,
