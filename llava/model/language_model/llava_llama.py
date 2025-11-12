@@ -502,7 +502,39 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             
             del outputs.hidden_states
             
-            if 'dinov2' in self.vra_target:
+            # Teacher/target feature extraction
+            if getattr(self, 'glamm_train', False):
+                # Use PatchEmbedder as the teacher with token aggregation (cls/mean/max/attn)
+                # Unnormalize LLaVA images back to [0,1] for HF processors
+                images_for_teacher = images
+                try:
+                    mean = torch.tensor(self.model.vision_tower.image_mean, dtype=images.dtype, device=images.device).view(1, 3, 1, 1)
+                    std = torch.tensor(self.model.vision_tower.image_std, dtype=images.dtype, device=images.device).view(1, 3, 1, 1)
+                    images_for_teacher = torch.clamp(images * std + mean, 0, 1)
+                except Exception:
+                    # Fallback to raw images if vision_tower stats are unavailable
+                    images_for_teacher = images
+                with torch.no_grad():
+                    alignment_feature = self.patch_embedder(images_for_teacher)  # [B, D]
+                # One-time debug: teacher and input stats
+                try:
+                    debug_once = is_main_process() and self.training and not getattr(self, "_vra_debug_once", False)
+                except Exception:
+                    debug_once = False
+                if debug_once:
+                    try:
+                        img_min = float(images_for_teacher.amin().item())
+                        img_max = float(images_for_teacher.amax().item())
+                    except Exception:
+                        img_min, img_max = None, None
+                    print(
+                        f"[VRA-DEBUG] glamm_train=True | images_for_teacher: shape={tuple(images_for_teacher.shape)}, dtype={images_for_teacher.dtype}, device={images_for_teacher.device}, min={img_min}, max={img_max}"
+                    )
+                    print(
+                        f"[VRA-DEBUG] PatchEmbedder: agg_mode={getattr(self, 'glamm_mode', 'mean')}, teacher_feat shape={tuple(alignment_feature.shape)}"
+                    )
+
+            elif 'dinov2' in self.vra_target:
                 images_resized = F.interpolate(images, size=(336, 336), mode="bilinear") # Maybe it is better to use 224 and upsample feature or downsample llm feature
                 self.alignment_encoder.eval()
                 with torch.no_grad():
@@ -562,54 +594,99 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                     alignment_feature = self.alignment_encoder.get_intermediate_layers(images_resized, [target_layer], return_class_token=False)[0]
                 del images_resized
             
-              
-            mid_hidden_states = torch.stack(mid_hidden_states, dim=1)
-            bsz, num_layers, seq_len, hidden_size = mid_hidden_states.shape # seq_len should be change to image patches
-            if self.alignment_loss == "direct" or (self.alignment_loss == "similarity" and self.use_projector):
-                if self.use_multiple_projectors:
-                    projected_feature = []
-                    for idx in range(len(self.target_layers)):
-                        proj_b = self.alignment_projector[idx](mid_hidden_states[:, idx, :])
-                        projected_feature.append(proj_b)
-                    projected_feature = torch.stack(projected_feature, dim=1)
-                else:
-                    mid_hidden_states = mid_hidden_states.view(-1, seq_len, hidden_size) # flatten the layers
-                    projected_feature = self.alignment_projector(mid_hidden_states)
-                    projected_feature = projected_feature.view(bsz, num_layers, seq_len, -1) # reshape to bsz, num_layers, seq_len, z_dim
-            elif self.alignment_loss == "similarity":
-                projected_feature = mid_hidden_states
-            
-            del mid_hidden_states
-            torch.cuda.empty_cache()
-            
-            vra_loss = 0.
-            valid_batch_count = 0
-            for b in range(bsz):
-                img_tokens_b = img_token_where[b]
-                if img_tokens_b.any() and img_tokens_b.sum() == 576:
-                    if self.only_coco and not is_coco[b]:
-                        continue
-                    valid_batch_count += 1
-                    for idx in range(len(self.target_layers)):
-                        if self.alignment_loss == "direct":
-                            proj_b = projected_feature[b, idx, img_tokens_b, :]
-                            proj_b = F.normalize(proj_b, dim=-1)
-                            alig_b = F.normalize(alignment_feature[b], dim=-1) # normalize the alignment feature
-                            vra_loss += (-(proj_b * alig_b).sum(dim=-1)).mean()
-                        elif self.alignment_loss == "similarity":
-                            proj_b = projected_feature[b, idx, img_tokens_b, :]
-                            alig_b = alignment_feature[b]
-                            proj_b = F.normalize(proj_b, dim=-1)
-                            alig_b = F.normalize(alig_b, dim=-1)
-                            
-                            proj_b = torch.matmul(proj_b, proj_b.transpose(-2, -1))
-                            alig_b = torch.matmul(alig_b, alig_b.transpose(-2, -1))
-                            sim_loss = F.mse_loss(proj_b, alig_b)
-                            vra_loss += sim_loss
-                        else:
-                            raise ValueError(f"Unknown alignment loss: {self.alignment_loss}")
-            if valid_batch_count > 0:
-                vra_loss /= (valid_batch_count * len(self.target_layers))
+            # Compute loss
+            mid_hidden_states = torch.stack(mid_hidden_states, dim=1)  # [B, L, S, H]
+            bsz, num_layers, seq_len, hidden_size = mid_hidden_states.shape
+
+            # If using PatchEmbedder (glamm_train), align aggregated visual tokens per layer to teacher agg feature
+            if getattr(self, 'glamm_train', False):
+                vra_loss = 0.
+                valid_batch_count = 0
+                printed_inner = False
+                for b in range(bsz):
+                    img_tokens_b = img_token_where[b]
+                    if img_tokens_b.any() and img_tokens_b.sum() == 576:
+                        if self.only_coco and not is_coco[b]:
+                            continue
+                        valid_batch_count += 1
+                        teacher_vec = alignment_feature[b].unsqueeze(0)  # [1, D]
+                        teacher_vec = F.normalize(teacher_vec, dim=-1)
+                        for idx in range(len(self.target_layers)):
+                            # Aggregate LLM image tokens for this layer
+                            layer_tokens = mid_hidden_states[b, idx, img_tokens_b, :]  # [T, H]
+                            agg_vec = layer_tokens.mean(dim=0, keepdim=True)  # [1, H]
+                            # One-time debug of token aggregation
+                            if not printed_inner and is_main_process() and self.training and not getattr(self, "_vra_debug_once", False):
+                                print(
+                                    f"[VRA-DEBUG] layer={self.target_layers[idx]} | img_token_count={int(img_tokens_b.sum().item())} | layer_tokens={tuple(layer_tokens.shape)} agg_vec(before proj)={tuple(agg_vec.shape)} teacher_vec={tuple(teacher_vec.shape)}"
+                                )
+                            # Optionally project to teacher dim
+                            if self.use_projector:
+                                agg_vec = self.alignment_projector(agg_vec)  # [1, z_dim]
+                                if not printed_inner and is_main_process() and self.training and not getattr(self, "_vra_debug_once", False):
+                                    print(
+                                        f"[VRA-DEBUG] agg_vec(after proj)={tuple(agg_vec.shape)} | use_projector=True"
+                                    )
+                            agg_vec = F.normalize(agg_vec, dim=-1)
+                            # Ensure dims match; if not, raise a helpful error
+                            if agg_vec.shape[-1] != teacher_vec.shape[-1]:
+                                raise ValueError(f"Dimension mismatch in VRA: LLM agg dim {agg_vec.shape[-1]} != teacher dim {teacher_vec.shape[-1]}. Set z_dim to {teacher_vec.shape[-1]} or enable projector.")
+                            vra_loss += (-(agg_vec * teacher_vec).sum(dim=-1)).mean()
+                            printed_inner = True
+                if valid_batch_count > 0:
+                    vra_loss /= (valid_batch_count * len(self.target_layers))
+                # Mark that we've printed debug info once
+                try:
+                    self._vra_debug_once = True
+                except Exception:
+                    pass
+            else:
+                # Per-patch alignment path
+                if self.alignment_loss == "direct" or (self.alignment_loss == "similarity" and self.use_projector):
+                    if self.use_multiple_projectors:
+                        projected_feature = []
+                        for idx in range(len(self.target_layers)):
+                            proj_b = self.alignment_projector[idx](mid_hidden_states[:, idx, :])
+                            projected_feature.append(proj_b)
+                        projected_feature = torch.stack(projected_feature, dim=1)
+                    else:
+                        mid_hidden_states = mid_hidden_states.view(-1, seq_len, hidden_size) # flatten the layers
+                        projected_feature = self.alignment_projector(mid_hidden_states)
+                        projected_feature = projected_feature.view(bsz, num_layers, seq_len, -1) # reshape to bsz, num_layers, seq_len, z_dim
+                elif self.alignment_loss == "similarity":
+                    projected_feature = mid_hidden_states
+                
+                del mid_hidden_states
+                torch.cuda.empty_cache()
+                
+                vra_loss = 0.
+                valid_batch_count = 0
+                for b in range(bsz):
+                    img_tokens_b = img_token_where[b]
+                    if img_tokens_b.any() and img_tokens_b.sum() == 576:
+                        if self.only_coco and not is_coco[b]:
+                            continue
+                        valid_batch_count += 1
+                        for idx in range(len(self.target_layers)):
+                            if self.alignment_loss == "direct":
+                                proj_b = projected_feature[b, idx, img_tokens_b, :]
+                                proj_b = F.normalize(proj_b, dim=-1)
+                                alig_b = F.normalize(alignment_feature[b], dim=-1) # normalize the alignment feature
+                                vra_loss += (-(proj_b * alig_b).sum(dim=-1)).mean()
+                            elif self.alignment_loss == "similarity":
+                                proj_b = projected_feature[b, idx, img_tokens_b, :]
+                                alig_b = alignment_feature[b]
+                                proj_b = F.normalize(proj_b, dim=-1)
+                                alig_b = F.normalize(alig_b, dim=-1)
+                                
+                                proj_b = torch.matmul(proj_b, proj_b.transpose(-2, -1))
+                                alig_b = torch.matmul(alig_b, alig_b.transpose(-2, -1))
+                                sim_loss = F.mse_loss(proj_b, alig_b)
+                                vra_loss += sim_loss
+                            else:
+                                raise ValueError(f"Unknown alignment loss: {self.alignment_loss}")
+                if valid_batch_count > 0:
+                    vra_loss /= (valid_batch_count * len(self.target_layers))
             
             
         if self.config.pretraining_tp > 1:
