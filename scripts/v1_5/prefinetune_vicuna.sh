@@ -1,15 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=viral_llava_lora_dino
-#SBATCH --output=/leonardo_scratch/large/userexternal/fgaragna/logs/%x-%j.out
-#SBATCH --error=/leonardo_scratch/large/userexternal/fgaragna/logs/%x-%j.err
+#SBATCH --output=/work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/logs/%x_%j.out
+#SBATCH --error=/work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/logs/%x_%j.err
 #SBATCH --open-mode=truncate
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --mem=480G
 #SBATCH --cpus-per-task=32
-#SBATCH --partition=boost_usr_prod
-#SBATCH --account=IscrB_MLLM-RAG
+#SBATCH --partition=all_usr_prod
+#SBATCH --account=cvcs2025
 #SBATCH --time=24:00:00
 
 module load anaconda3/2022.05
@@ -114,5 +114,5 @@ llava/train/train_mem.py \
 --report_to wandb \
 --config_path ./config_2.json \
 --use_glamm True \
---grand_image_dir "" \
---grand_annotation_dir ""
+--grand_image_dir /work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/dataset/GLAMM/images \
+--grand_annotation_dir /work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/dataset/GLAMM/annotations
