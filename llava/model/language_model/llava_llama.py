@@ -516,6 +516,23 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                     images_for_teacher = images
                 with torch.no_grad():
                     alignment_feature = self.patch_embedder(images_for_teacher)  # [B, D]
+                # One-time debug: teacher and input stats
+                try:
+                    debug_once = is_main_process() and self.training and not getattr(self, "_vra_debug_once", False)
+                except Exception:
+                    debug_once = False
+                if debug_once:
+                    try:
+                        img_min = float(images_for_teacher.amin().item())
+                        img_max = float(images_for_teacher.amax().item())
+                    except Exception:
+                        img_min, img_max = None, None
+                    print(
+                        f"[VRA-DEBUG] glamm_train=True | images_for_teacher: shape={tuple(images_for_teacher.shape)}, dtype={images_for_teacher.dtype}, device={images_for_teacher.device}, min={img_min}, max={img_max}"
+                    )
+                    print(
+                        f"[VRA-DEBUG] PatchEmbedder: agg_mode={getattr(self, 'glamm_mode', 'mean')}, teacher_feat shape={tuple(alignment_feature.shape)}"
+                    )
 
             elif 'dinov2' in self.vra_target:
                 images_resized = F.interpolate(images, size=(336, 336), mode="bilinear") # Maybe it is better to use 224 and upsample feature or downsample llm feature
@@ -585,6 +602,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             if getattr(self, 'glamm_train', False):
                 vra_loss = 0.
                 valid_batch_count = 0
+                printed_inner = False
                 for b in range(bsz):
                     img_tokens_b = img_token_where[b]
                     if img_tokens_b.any() and img_tokens_b.sum() == 576:
@@ -597,16 +615,31 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                             # Aggregate LLM image tokens for this layer
                             layer_tokens = mid_hidden_states[b, idx, img_tokens_b, :]  # [T, H]
                             agg_vec = layer_tokens.mean(dim=0, keepdim=True)  # [1, H]
+                            # One-time debug of token aggregation
+                            if not printed_inner and is_main_process() and self.training and not getattr(self, "_vra_debug_once", False):
+                                print(
+                                    f"[VRA-DEBUG] layer={self.target_layers[idx]} | img_token_count={int(img_tokens_b.sum().item())} | layer_tokens={tuple(layer_tokens.shape)} agg_vec(before proj)={tuple(agg_vec.shape)} teacher_vec={tuple(teacher_vec.shape)}"
+                                )
                             # Optionally project to teacher dim
                             if self.use_projector:
                                 agg_vec = self.alignment_projector(agg_vec)  # [1, z_dim]
+                                if not printed_inner and is_main_process() and self.training and not getattr(self, "_vra_debug_once", False):
+                                    print(
+                                        f"[VRA-DEBUG] agg_vec(after proj)={tuple(agg_vec.shape)} | use_projector=True"
+                                    )
                             agg_vec = F.normalize(agg_vec, dim=-1)
                             # Ensure dims match; if not, raise a helpful error
                             if agg_vec.shape[-1] != teacher_vec.shape[-1]:
                                 raise ValueError(f"Dimension mismatch in VRA: LLM agg dim {agg_vec.shape[-1]} != teacher dim {teacher_vec.shape[-1]}. Set z_dim to {teacher_vec.shape[-1]} or enable projector.")
                             vra_loss += (-(agg_vec * teacher_vec).sum(dim=-1)).mean()
+                            printed_inner = True
                 if valid_batch_count > 0:
                     vra_loss /= (valid_batch_count * len(self.target_layers))
+                # Mark that we've printed debug info once
+                try:
+                    self._vra_debug_once = True
+                except Exception:
+                    pass
             else:
                 # Per-patch alignment path
                 if self.alignment_loss == "direct" or (self.alignment_loss == "similarity" and self.use_projector):
