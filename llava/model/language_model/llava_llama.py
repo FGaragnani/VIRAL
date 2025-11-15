@@ -348,7 +348,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                     torch.cuda.empty_cache()
 
         if self.glamm_train:
-            self.patch_embedder = PatchEmbedder(agg_mode=config.glamm_mode, device=config.device)
+            self.patch_embedder = PatchEmbedder(agg_mode=config.glamm_mode)
 
         # Initialize weights and apply final processing
         self.post_init()
