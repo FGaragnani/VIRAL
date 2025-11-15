@@ -119,4 +119,4 @@ llava/train/train_mem.py \
 --config_path ./config_2.json \
 --use_glamm True \
 --grand_image_dir /work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/dataset/GLAMM/images \
---grand_annotation_dir /work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/dataset/GLAMM/annotations
+--grand_annotation_dir /work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/dataset/GLAMM/annotations/annotations/
