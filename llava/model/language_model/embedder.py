@@ -60,8 +60,6 @@ class PatchEmbedder(nn.Module):
             model_name = "/work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/checkpoints/facebook/dinov2-base"
             self.processor = AutoImageProcessor.from_pretrained(model_name)
             self.model = AutoModel.from_pretrained(model_name).to(device)
-        self.processor.to(device)
-        self.model.to(device)
         self.model.eval()
         self.agg_mode = agg_mode
         self.device = device
