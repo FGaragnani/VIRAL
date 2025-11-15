@@ -36,7 +36,7 @@ from torch.nn import CrossEntropyLoss
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-from embedder import PatchEmbedder
+from .embedder import PatchEmbedder
 
 # IMAGENET_DEFAULT_MEAN = [0.48145466, 0.4578275, 0.40821073]
 # IMAGENET_DEFAULT_STD = [0.26862954, 0.26130258, 0.27577711]
