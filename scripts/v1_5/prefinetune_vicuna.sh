@@ -31,7 +31,9 @@ export TOKENIZERS_PARALLELISM=false
 export WANDB_MODE=offline
 export WANDB_PROJECT=jeppetto
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export HF_HUB_CACHE="/leonardo_scratch/large/userexternal/fcocchi0/rag_mlmm/hf_models"
+# export HF_HUB_CACHE="/leonardo_scratch/large/userexternal/fcocchi0/rag_mlmm/hf_models"
+export HF_HUB_CACHE="/work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/checkpoints/"
+export HF_HOME="/work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/checkpoints/"
 export HF_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
@@ -46,12 +48,14 @@ mm_projector_type="mlp2x_gelu"
 learning_rate=2e-4
 mm_projector_lr=2e-5
 run_name="${SLURM_JOB_NAME}"
-output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/${run_name}"
+# output_dir="/leonardo_scratch/large/userexternal/fgaragna/checkpoints/viral/${run_name}"
+output_dir="/work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/checkpoints/viral/${run_name}"
 
 per_device_train_batch_size=16
 gradient_accumulation_steps=2
 
-language_model="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys/vicuna-7b-v1.5"
+# language_model="/leonardo_scratch/large/userexternal/fgaragna/models/lmsys/vicuna-7b-v1.5"
+language_model="/work/cvcs2025/garagnani_napolitano_ricciardi/fil/tesi/checkpoints/lmsys/vicuna-7b-v1.5"
 train_data_path="/leonardo_scratch/large/userexternal/fgaragna/dataset/viral/llava_v1_5_mix665k.json"
 train_image_folder="/leonardo_scratch/large/userexternal/fgaragna/dataset/viral"
 
@@ -90,7 +94,7 @@ llava/train/train_mem.py \
 --mm_use_im_patch_token False \
 --image_aspect_ratio pad \
 --group_by_modality_length True \
---bf16 True \
+--bf16 False \
 --output_dir $output_dir \
 --num_train_epochs 1 \
 --per_device_train_batch_size $per_device_train_batch_size \
