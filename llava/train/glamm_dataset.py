@@ -433,42 +433,6 @@ class GranDDataset(Dataset):
             out["is_coco"] = False
             return out
         
+        # Non-flattened path (returns multiple patches per item). TODO
         else:
             raise NotImplementedError("Non-flattened patch mode not yet implemented.")
-
-        # Non-flattened path (returns multiple patches per item). TODO
-        """
-        ann_file = self.annotations[idx]
-        image_name = list(ann_file.keys())[0]
-        ann = ann_file[image_name]
-        image_path = os.path.join(self.image_dir, image_name)
-        image = Image.open(image_path).convert("RGB")
-        img_area = image.width * image.height
-        patches = []
-        captions = []
-
-        for bbox, labels in self._iter_regions(ann):
-            img_crop = self._extract_patch(image, img_area, bbox)
-            if img_crop is None:
-                continue
-            img_t: torch.Tensor = self._preprocess_patch_image(img_crop)
-            patches.append(img_t)
-            captions.append(labels)
-
-        if len(patches) == 0:
-            # fallback: whole image
-            img_t = self._preprocess_patch_image(image)
-            patches = [img_t]
-            captions = [self._get_captions(ann)]
-
-        patches = torch.stack(patches)
-
-        # TODO: For using non-flattened mode, you must implement a custom collator and
-        # modify the model forward pass to accept multiple patches per sample.
-        return {
-            "image_id": image_name.split(".")[0],
-            "patches": patches,  # shape (N, C, H, W)
-            "labels": captions,  # list per patch
-            "caption": self._get_captions(ann),
-        }
-        """
