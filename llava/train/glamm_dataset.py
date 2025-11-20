@@ -7,7 +7,7 @@ from PIL import Image, ImageOps
 import numpy as np
 import json
 import os
-from typing import List, Tuple, Optional, Dict, Sequence
+from typing import List, Tuple, Optional, Dict, Sequence, Callable
 
 # Imports to align with LLaVA preprocessing/tokenization
 from llava import conversation as conversation_lib
@@ -44,8 +44,13 @@ class GranDDataset(Dataset):
         self.image_dir = image_dir
         self.patch_size = patch_size if patch_size is not None else (224, 224)
         self.transform = self._resize_and_pad
-        self.annotations = [json.load(open(os.path.join(annotation_dir, f))) for f in os.listdir(annotation_dir)]
-        self.check_area_fn = (lambda img_size, patch_area: (patch_area / img_size) > check_area)
+        self.annotation_dir = annotation_dir
+        self.annotation_files: List[str] = [
+            os.path.join(annotation_dir, f)
+            for f in os.listdir(annotation_dir)
+            if f.lower().endswith(".json")
+        ]
+        self.check_area_fn: Callable[[float, float], bool] = (lambda img_size, patch_area: (patch_area / img_size) > check_area)
 
         # Tokenizer and data-related config
         self.tokenizer = tokenizer
@@ -57,12 +62,11 @@ class GranDDataset(Dataset):
         self.flatten_patches = flatten_patches
         self.prompt_template = prompt_template or "Describe the object(s) present in this region."
         self.label_joiner = label_joiner
+        self._flat_index: list = []
+        if self.flatten_patches:
+            self._build_flat_index()
 
-        # Lazy-built flat index of patches across all images when flattening
-        self._flat_index_built = False
-        self._flat_index: list = []  # entries: dict with keys (ann_idx, image_name, bbox, labels)
-
-    def _resize_and_pad(self, img) -> torch.Tensor:
+    def _resize_and_pad(self, img: Image.Image) -> torch.Tensor:
         """Resize PIL Image and pad to exact `patch_size`, centering the content.
 
         This uses PIL.ImageOps.pad which preserves aspect ratio and centers the
@@ -76,7 +80,7 @@ class GranDDataset(Dataset):
         try:
             pil = ImageOps.pad(img, (target_w, target_h), color=0, centering=(0.5, 0.5))
         except TypeError:
-            # for older Pillow versions without color argument
+            # for older Pillow versions 
             w, h = img.size
             if w <= 0 or h <= 0:
                 raise ValueError("Image has zero or negative dimension")
@@ -99,8 +103,7 @@ class GranDDataset(Dataset):
 
         return F.to_tensor(pil)
 
-    # --- Helper methods for LLaVA-style preprocessing ---
-    def _tokenize_fn(self, strings: Sequence[str]):
+    def _tokenize_fn(self, strings: Sequence[str]) -> Dict[str, List]:
         assert self.tokenizer is not None, "Tokenizer must be provided to GranDDataset to produce input_ids/labels."
         tokenized_list = [
             self.tokenizer(
@@ -211,8 +214,6 @@ class GranDDataset(Dataset):
 
         return dict(input_ids=input_ids, labels=targets)
 
-    # --- End of LLaVA-style preprocessing helpers ---
-
     def _preprocess_patch_image(self, pil_img: Image.Image) -> torch.Tensor:
         """Convert a PIL patch to model-ready tensor using image_processor if available.
 
@@ -221,7 +222,7 @@ class GranDDataset(Dataset):
         if self.image_processor is None:
             return self._resize_and_pad(pil_img)
 
-        # Handle optional square padding consistent with LazySupervisedDataset
+        # Optional square padding (image_aspect_ratio="pad")
         image_aspect_ratio = getattr(self.data_args, "image_aspect_ratio", "square") if self.data_args else "square"
         if image_aspect_ratio == "pad":
             def expand2square(pil_img, background_color):
@@ -246,7 +247,7 @@ class GranDDataset(Dataset):
     def _build_conversation_for_patch(self, labels) -> Sequence[Dict[str, str]]:
         """Create a simple two-turn conversation for a patch.
 
-        TODO: Replace the instruction with your exact task prompt if needed.
+        TODO: Replace the instructions.
         """
         # Normalize labels to a string
         if isinstance(labels, (list, tuple)):
@@ -254,12 +255,36 @@ class GranDDataset(Dataset):
         else:
             label_text = str(labels)
 
-        instruction = self.prompt_template  # user-provided or default
+        instruction = self.prompt_template
 
         return [
             {"from": "human", "value": f"{DEFAULT_IMAGE_TOKEN}\n{instruction}"},
             {"from": "gpt", "value": label_text},
         ]
+
+    def _load_region_by_entry(self, entry: Dict) -> Tuple[Tuple[int, int, int, int], List[str] | str]:
+        """Given a flat-index entry, load bbox and labels from its annotation JSON.
+
+        Returns (bbox, labels). bbox is (l,t,r,b) as ints. labels is list or string.
+        """
+        ann_path: str = entry["ann_path"]
+        image_name: str = entry["image_name"]
+        src: str = entry["src"]
+        region_idx: int = entry["region_idx"]
+
+        with open(ann_path, "r", encoding="utf-8") as f:
+            ann_file = json.load(f)
+        ann = ann_file.get(image_name, {})
+        regions = ann.get(src, [])
+        if not isinstance(regions, list) or not (0 <= region_idx < len(regions)):
+            raise RuntimeError(f"Region not found: {ann_path}:{image_name}:{src}[{region_idx}]")
+        region = regions[region_idx]
+        bbox = region.get("bbox")
+        labels = region.get("labels")
+        if bbox is None or labels is None:
+            raise RuntimeError(f"Missing bbox/labels in {ann_path}:{image_name}:{src}[{region_idx}]")
+        l, t, r, b = map(int, bbox)
+        return (l, t, r, b), labels
 
     def _iter_regions(self, ann: dict):
         """Yield (bbox, labels) tuples from both objects and floating_objects."""
@@ -315,87 +340,81 @@ class GranDDataset(Dataset):
 
         return captions
 
-    def _ensure_flat_index(self):
-        if self._flat_index_built or not self.flatten_patches:
-            return
+    def _build_flat_index(self):
+        """Build list of valid patch entries.
+        """
         self._flat_index = []
-        for ann_idx, ann_file in enumerate(self.annotations):
+        for ann_idx, ann_path in enumerate(self.annotation_files):
+            # Stream-load JSON, don't keep beyond this scope
+            try:
+                with open(ann_path, "r", encoding="utf-8") as f:
+                    ann_file = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(ann_file, dict) or len(ann_file) == 0:
+                continue
             image_name = list(ann_file.keys())[0]
-            ann = ann_file[image_name]
+            ann = ann_file.get(image_name, {})
             image_path = os.path.join(self.image_dir, image_name)
             if not os.path.exists(image_path):
                 continue
             try:
-                image = Image.open(image_path).convert("RGB")
+                with Image.open(image_path) as im:
+                    width, height = im.size
             except Exception:
                 continue
-            img_area = image.width * image.height
+            img_area = width * height
 
-            # Collect valid regions; if none, add fallback full-image entry
-            added = False
-            for bbox, labels in self._iter_regions(ann):
-                left, upper, right, lower = bbox
-                patch_area = max(0, right - left) * max(0, lower - upper)
-                if patch_area <= 0:
+            # Collect valid regions
+            for src in ("objects", "floating_objects"):
+                regions = ann.get(src, [])
+                if not isinstance(regions, list):
                     continue
-                if not self.check_area_fn(img_area, patch_area):
-                    continue
-                self._flat_index.append(
-                    {
-                        "ann_idx": ann_idx,
-                        "image_name": image_name,
-                        "bbox": bbox,
-                        "labels": labels,
-                    }
-                )
-                added = True
-
-            if not added:
-                # Fallback: whole image with captions from dense_caption or short_captions
-                labels = self._get_captions(ann)
-                # bbox covering whole image
-                bbox = (0, 0, image.width, image.height)
-                self._flat_index.append(
-                    {
-                        "ann_idx": ann_idx,
-                        "image_name": image_name,
-                        "bbox": bbox,
-                        "labels": labels,
-                    }
-                )
-
-        self._flat_index_built = True
+                for region_idx, region in enumerate(regions):
+                    if not isinstance(region, dict):
+                        continue
+                    bbox = region.get("bbox")
+                    if bbox is None:
+                        continue
+                    try:
+                        left, upper, right, lower = map(int, bbox)
+                    except Exception:
+                        continue
+                    patch_area = max(0, right - left) * max(0, lower - upper)
+                    if patch_area <= 0:
+                        continue
+                    if not self.check_area_fn(img_area, patch_area):
+                        continue
+                    self._flat_index.append(
+                        {
+                            "ann_path": ann_path,
+                            "image_name": image_name,
+                            "src": src,
+                            "region_idx": region_idx,
+                        }
+                    )
 
     def __len__(self):
         if self.flatten_patches:
-            self._ensure_flat_index()
             return len(self._flat_index)
-        return len(self.annotations)
+        # In non-flattened mode, report number of annotation files
+        return len(self.annotation_files)
     
-    def _extract_patch(self, img: Image.Image, img_area, bbox) -> Optional[Image.Image]:
+    def _extract_patch(self, img: Image.Image, bbox) -> Image.Image:
         left, upper, right, lower = bbox
-        # check if patch is large enough
-        if self.check_area_fn(img_area, (right - left)*(lower - upper)) == False:
-            return None
         img_crop = img.crop((left, upper, right, lower))
         return img_crop
 
     def __getitem__(self, idx):
         if self.flatten_patches:
-            # Return a single patch + tokenized text ready for training
-            self._ensure_flat_index()
+            # Return a single patch + tokenized text
             entry = self._flat_index[idx]
             image_name = entry["image_name"]
-            bbox = entry["bbox"]
-            labels = entry["labels"]
+            bbox, labels = self._load_region_by_entry(entry)
 
             image_path = os.path.join(self.image_dir, image_name)
             image = Image.open(image_path).convert("RGB")
-            img_area = image.width * image.height
-            img_crop = self._extract_patch(image, img_area, bbox)
-            if img_crop is None:
-                # Extremely rare: fallback to whole image
-                img_crop = image
+            img_crop = self._extract_patch(image, bbox)
 
             image_tensor = self._preprocess_patch_image(img_crop)
 
@@ -413,9 +432,12 @@ class GranDDataset(Dataset):
             # Optional flags
             out["is_coco"] = False
             return out
+        
+        else:
+            raise NotImplementedError("Non-flattened patch mode not yet implemented.")
 
-        # Non-flattened path (returns multiple patches per item). This is not directly
-        # compatible with the current collator; kept for completeness with a TODO.
+        # Non-flattened path (returns multiple patches per item). TODO
+        """
         ann_file = self.annotations[idx]
         image_name = list(ann_file.keys())[0]
         ann = ann_file[image_name]
@@ -449,3 +471,4 @@ class GranDDataset(Dataset):
             "labels": captions,  # list per patch
             "caption": self._get_captions(ann),
         }
+        """
