@@ -262,15 +262,58 @@ class GranDDataset(Dataset):
         ]
 
     def _iter_regions(self, ann: dict):
-        # Yield regions from both objects and floating_objects, if present
+        """Yield (bbox, labels) tuples from both objects and floating_objects."""
         for key in ("objects", "floating_objects"):
             regions = ann.get(key, [])
+            if not isinstance(regions, list):
+                continue
             for region in regions:
+                if not isinstance(region, dict):
+                    continue
                 bbox = region.get("bbox")
                 labels = region.get("labels")
                 if bbox is None or labels is None:
                     continue
+                # Ensure labels is a list
+                if not isinstance(labels, list):
+                    labels = [labels]
                 yield bbox, labels
+
+    def _get_captions(self, ann: dict) -> list:
+        """Extract captions from annotation, preferring dense_caption over short_captions."""
+        captions = []
+        
+        # dense_caption
+        if "dense_caption" in ann:
+            dense = ann["dense_caption"]
+            if isinstance(dense, dict) and "caption" in dense:
+                caption_text = dense["caption"]
+                if caption_text and isinstance(caption_text, str):
+                    captions.append(caption_text)
+            elif isinstance(dense, str) and dense:
+                captions.append(dense)
+        
+        # short_captions
+        if not captions and "short_captions" in ann:
+            short = ann["short_captions"]
+            if isinstance(short, list):
+                for cap_obj in short:
+                    if isinstance(cap_obj, dict) and "caption" in cap_obj:
+                        caption_text = cap_obj["caption"]
+                        if caption_text and isinstance(caption_text, str):
+                            captions.append(caption_text)
+                    elif isinstance(cap_obj, str) and cap_obj:
+                        captions.append(cap_obj)
+        
+        # simple captions
+        if not captions and "captions" in ann:
+            old_caps = ann["captions"]
+            if isinstance(old_caps, list):
+                captions.extend([c for c in old_caps if c and isinstance(c, str)])
+            elif isinstance(old_caps, str) and old_caps:
+                captions.append(old_caps)
+
+        return captions
 
     def _ensure_flat_index(self):
         if self._flat_index_built or not self.flatten_patches:
@@ -308,8 +351,8 @@ class GranDDataset(Dataset):
                 added = True
 
             if not added:
-                # Fallback: whole image with optional captions
-                labels = ann.get("captions", [])
+                # Fallback: whole image with captions from dense_caption or short_captions
+                labels = self._get_captions(ann)
                 # bbox covering whole image
                 bbox = (0, 0, image.width, image.height)
                 self._flat_index.append(
@@ -394,7 +437,7 @@ class GranDDataset(Dataset):
             # fallback: whole image
             img_t = self._preprocess_patch_image(image)
             patches = [img_t]
-            captions = [ann.get("captions", [])]
+            captions = [self._get_captions(ann)]
 
         patches = torch.stack(patches)
 
@@ -404,5 +447,5 @@ class GranDDataset(Dataset):
             "image_id": image_name.split(".")[0],
             "patches": patches,  # shape (N, C, H, W)
             "labels": captions,  # list per patch
-            "caption": ann.get("captions", []),
+            "caption": self._get_captions(ann),
         }

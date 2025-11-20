@@ -8,3 +8,6 @@ results/risultati-20251026.synctex.gz
 results/risultati-20251026.fdb_latexmk
 results/risultati-20251026.fls
 results/risultati-20250826.synctex.gz
+/data
+visualization.py
+*.pyc
