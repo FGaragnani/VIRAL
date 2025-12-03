@@ -286,7 +286,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             self.use_projector = config.use_projector if hasattr(config, 'use_projector') else False # If False, use the mid hidden states directly, only for similarity loss.
             self.use_multiple_projectors = config.use_multiple_projectors if hasattr(config, 'use_multiple_projectors') else False # If True, use multiple projectors for each layer, only for similarity loss.
             self.glamm_train = config.glamm_train if hasattr(config, 'glamm_train') else False # Use the GLAMM embedder to train
-            self.glamm_mode = config.glamm_mode if hasattr(config, 'glamm_mode') else "mean" # One of 'mean', 'cls', 'attn', 'max'
+            self.glamm_mode = config.glamm_mode if hasattr(config, 'glamm_mode') else "cls" # One of 'mean', 'cls', 'attn', 'max'
             if self.target_layers is not None and not self.glamm_train:
                 if self.use_multiple_projectors:
                     self.alignment_projector = nn.ModuleList([

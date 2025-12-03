@@ -1013,7 +1013,7 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
             tokenizer=tokenizer,
             data_args=data_args,
             image_processor=getattr(data_args, 'image_processor', None),
-            flatten_patches=getattr(data_args, 'flatten_patches', True),
+            flatten_patches=getattr(data_args, 'flatten_patches', False),
             prompt_template=getattr(data_args, 'prompt_template', None),
         )
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)

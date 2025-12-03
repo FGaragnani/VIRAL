@@ -23,9 +23,12 @@ class GranDDataset(Dataset):
     """
     Dataset for GLAMM training using GranD annotations.
 
-    flatten_patches=True (default), __len__ equals the number of valid patches
+    flatten_patches =True, __len__ equals the number of valid patches
       across all images, and each __getitem__ returns one patch + tokenized text
-      ready for training, with keys: input_ids, labels, image. (if False won't work)
+      ready for training, with keys: input_ids, labels, image.
+                    =False, __len__ equals the number of images with dense captions,
+      and each __getitem__ returns the full image tensor, dense caption text,
+        list of object strings, and list of patch tensors.
     """
 
     def __init__(
@@ -37,7 +40,7 @@ class GranDDataset(Dataset):
         image_processor=None,
         patch_size: Tuple[int, int] = (224, 224),
         check_area: float = 0.05,
-        flatten_patches: bool = True,
+        flatten_patches: bool = False,
         prompt_template: Optional[str] = None,
         label_joiner: str = ", ",
     ):
@@ -63,8 +66,11 @@ class GranDDataset(Dataset):
         self.prompt_template = prompt_template or "Describe the object(s) present in this region."
         self.label_joiner = label_joiner
         self._flat_index: list = []
+        self._image_index: list = []
         if self.flatten_patches:
             self._build_flat_index()
+        else:
+            self._build_image_index()
 
     def _resize_and_pad(self, img: Image.Image) -> torch.Tensor:
         """Resize PIL Image and pad to exact `patch_size`, centering the content.
@@ -341,7 +347,8 @@ class GranDDataset(Dataset):
         return captions
 
     def _build_flat_index(self):
-        """Build list of valid patch entries.
+        """
+            Build list of valid patch entries.
         """
         self._flat_index = []
         for ann_idx, ann_path in enumerate(self.annotation_files):
@@ -394,11 +401,41 @@ class GranDDataset(Dataset):
                         }
                     )
 
+    def _build_image_index(self):
+        """Build per-image index restricted to images having a dense caption.
+
+        Each entry: {ann_path, image_name}. Images without a usable dense caption are skipped.
+        """
+        self._image_index = []
+        for ann_path in self.annotation_files:
+            try:
+                with open(ann_path, "r", encoding="utf-8") as f:
+                    ann_file = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(ann_file, dict) or len(ann_file) == 0:
+                continue
+            image_name = list(ann_file.keys())[0]
+            ann = ann_file.get(image_name, {})
+            dense = ann.get("dense_caption", {})
+            caption = None
+            if isinstance(dense, dict):
+                caption = dense.get("caption")
+            elif isinstance(dense, str):
+                caption = dense
+            if not caption or not isinstance(caption, str):
+                # Skip images without valid dense caption
+                continue
+            image_path = os.path.join(self.image_dir, image_name)
+            if not os.path.exists(image_path):
+                continue
+            self._image_index.append({"ann_path": ann_path, "image_name": image_name})
+
     def __len__(self):
         if self.flatten_patches:
             return len(self._flat_index)
-        # In non-flattened mode, report number of annotation files
-        return len(self.annotation_files)
+        # Non-flattened mode: number of images with dense captions
+        return len(self._image_index)
     
     def _extract_patch(self, img: Image.Image, bbox) -> Image.Image:
         left, upper, right, lower = bbox
@@ -435,4 +472,93 @@ class GranDDataset(Dataset):
         
         # Non-flattened path (returns multiple patches per item). TODO
         else:
-            raise NotImplementedError("Non-flattened patch mode not yet implemented.")
+            # Per-image sample aggregating all region tensors and dense caption details
+            if not (0 <= idx < len(self._image_index)):
+                raise IndexError(idx)
+            entry = self._image_index[idx]
+            ann_path = entry["ann_path"]
+            image_name = entry["image_name"]
+
+            with open(ann_path, "r", encoding="utf-8") as f:
+                ann_file = json.load(f)
+            ann = ann_file.get(image_name, {})
+
+            # Dense caption (guaranteed to exist from index build)
+            dense = ann.get("dense_caption", {})
+            if isinstance(dense, dict):
+                dense_caption_text = dense.get("caption", "")
+                details = dense.get("details", [])
+            elif isinstance(dense, str):
+                dense_caption_text = dense
+                details = []
+            else:
+                dense_caption_text = ""
+                details = []
+
+            # Objects list derived from dense caption details (fallback empty)
+            objects: List[str] = []
+            if isinstance(details, list):
+                for d in details:
+                    if isinstance(d, dict):
+                        # Try common keys
+                        for k in ("caption", "text", "detail", "value", "description"):
+                            if k in d and isinstance(d[k], str) and d[k].strip():
+                                objects.append(d[k].strip())
+                                break
+                        else:
+                            # No known key matched; attempt to stringify
+                            s = str(d).strip()
+                            if s:
+                                objects.append(s)
+                    elif isinstance(d, str):
+                        s = d.strip()
+                        if s:
+                            objects.append(s)
+
+            # Load full image
+            image_path = os.path.join(self.image_dir, image_name)
+            image = Image.open(image_path).convert("RGB")
+
+            # Produce patch tensors for valid regions (same filtering as flat index)
+            try:
+                width, height = image.size
+            except Exception:
+                raise RuntimeError(f"Failed to open image {image_path}")
+            img_area = width * height
+            patch_tensors: List[torch.Tensor] = []
+            for src in ("objects", "floating_objects"):
+                regions = ann.get(src, [])
+                if not isinstance(regions, list):
+                    continue
+                for region in regions:
+                    if not isinstance(region, dict):
+                        continue
+                    bbox = region.get("bbox")
+                    if bbox is None:
+                        continue
+                    try:
+                        left, upper, right, lower = map(int, bbox)
+                    except Exception:
+                        continue
+                    patch_area = max(0, right - left) * max(0, lower - upper)
+                    if patch_area <= 0:
+                        continue
+                    if not self.check_area_fn(img_area, patch_area):
+                        continue
+                    crop = self._extract_patch(image, (left, upper, right, lower))
+                    patch_tensors.append(self._preprocess_patch_image(crop))
+
+            # Full image tensor (optionally processed) - keep raw transform for consistency
+            if self.image_processor is None:
+                full_image_tensor = F.to_tensor(image)
+            else:
+                full_image_tensor = self.image_processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
+
+            # Assemble sample as requested
+            sample = {
+                "image": full_image_tensor,  # full image tensor
+                "dense_caption": dense_caption_text,  # original caption
+                "objects": objects,  # list of strings from details
+                "tensors": patch_tensors,  # list of patch tensors
+            }
+            return sample
